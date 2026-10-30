@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - 'v*'
-      - 'probe'
   workflow_dispatch:
 
 permissions:
@@ -53,6 +52,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $options = @('--repo', $env:GITHUB_REPOSITORY, '--verify-tag', '--title', "IMC.RE Overlay $env:GITHUB_REF_NAME", '--generate-notes')
-          if ($env:GITHUB_REF_NAME -eq 'probe' -or $env:GITHUB_REF_NAME.Contains('-')) { $options += '--prerelease' }
+          if ($env:GITHUB_REF_NAME.Contains('-')) { $options += '--prerelease' }
           gh release create $env:GITHUB_REF_NAME $env:RELEASE_ASSET @options
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

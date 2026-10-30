@@ -34,6 +34,6 @@ git tag v1.0.1
 git push origin v1.0.1
 ```
 
-`probe` 标签和包含连字符的标签（例如 `v1.1.0-beta.1`）会发布为预发行版本。普通分支推送不会自动创建 Release。
+包含连字符的版本标签（例如 `v1.1-probe`）会发布为预发行版本。普通分支推送不会自动创建 Release。
 
 也可在 GitHub Actions 中手动运行工作流验证构建；手动运行只上传供下载的 Actions 构建产物，不创建 Release。
