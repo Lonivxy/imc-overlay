@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Collections;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
 using System.Runtime.InteropServices;
@@ -35,12 +36,17 @@ public partial class MainWindow : Window
     const int WM_HOTKEY = 0x0312, WM_NCLBUTTONDOWN = 0x00A1, HTCAPTION = 2;
     static readonly IntPtr HWND_TOPMOST = new(-1);
     static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(12) };
+    static readonly HttpClient WallpaperHttp = new() { Timeout = TimeSpan.FromSeconds(45) };
     static readonly SemaphoreSlim ApiSlots = new(6, 6);
     static readonly SemaphoreSlim StartGate = new(1, 1);
     static long LastStartTicks;
     string _sortKey = "threat"; bool _sortDescending = true;
     string _mode = "bedwars";
     int _searchVersion;
+    int _cardVersion;
+    BitmapSource? _cardImage;
+    BitmapSource? _officialWallpaper;
+    string _cardName = "";
     double _resizeWidth;
     string _statusBeforeResize = "";
     static readonly ConcurrentDictionary<string, (PlayerRow Row, DateTime Time)> StatsCache = new(StringComparer.OrdinalIgnoreCase);
@@ -253,9 +259,9 @@ public partial class MainWindow : Window
     {
         var name = SearchBox.Text.Trim(); if (!UserRegex.IsMatch(name)) { ModalMessage.Text = "请输入 3 到 16 位英文、数字或下划线组成的玩家名。"; return; }
         var mode = _mode; var version = ++_searchVersion;
-        ModalMessage.Text = "正在查询，遇到服务限流时会自动重试…"; CopyButton.Visibility = Visibility.Collapsed;
+        ModalMessage.Text = "正在查询，遇到服务限流时会自动重试…"; CopyButton.Visibility = Visibility.Collapsed; CardButton.Visibility = Visibility.Collapsed;
         var result = await FetchStats(name, mode); if (version != _searchVersion || mode != _mode) return; LastSearchResult = result;
-        if (result?.State == "ok") { ModalMessage.Text = FormatStats(result); CopyButton.Visibility = Visibility.Visible; }
+        if (result?.State == "ok") { ModalMessage.Text = FormatStats(result); CopyButton.Visibility = Visibility.Visible; CardButton.Visibility = Visibility.Visible; }
         else ModalMessage.Text = result?.State == "unregistered" ? "未找到该玩家在当前模式的记录。" : $"查询失败：{result?.Error ?? "请检查网络后重试。"}";
     }
     void ShowPanel(Border panel)
@@ -278,7 +284,7 @@ public partial class MainWindow : Window
         animation.Completed += (_, _) => { if (ReferenceEquals(panel.Tag, marker)) { panel.Visibility = Visibility.Collapsed; panel.BeginAnimation(OpacityProperty, null); panel.Opacity = 1; } };
         panel.BeginAnimation(OpacityProperty, animation);
     }
-    void Search_Click(object sender, RoutedEventArgs e) { _searchVersion++; LastSearchResult = null; ModalTitle.Text = "查询玩家战绩"; SearchBox.Text = ""; ModalMessage.Text = "输入玩家名，最多自动重试 3 次。"; CopyButton.Visibility = Visibility.Collapsed; ShowPanel(ModalShade); SearchBox.Focus(); }
+    void Search_Click(object sender, RoutedEventArgs e) { _searchVersion++; LastSearchResult = null; ModalTitle.Text = "查询玩家战绩"; SearchBox.Text = ""; ModalMessage.Text = "输入玩家名，最多自动重试 3 次。"; CopyButton.Visibility = Visibility.Collapsed; CardButton.Visibility = Visibility.Collapsed; ShowPanel(ModalShade); SearchBox.Focus(); }
     void Settings_Click(object sender, RoutedEventArgs e) { ShowPanel(SettingsShade); }
     void OpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) { Opacity = e.NewValue; }
     void Close_Click(object sender, RoutedEventArgs e) => Close();
@@ -308,6 +314,64 @@ public partial class MainWindow : Window
     }
     void PlayersGrid_DoubleClick(object sender, MouseButtonEventArgs e) { if (PlayersGrid.SelectedItem is PlayerRow p) { LastSearchResult = p; Copy(p); } }
     void CopySearch_Click(object sender, RoutedEventArgs e) { if (LastSearchResult is { State: "ok" } p) Copy(p); }
+    async void CardView_Click(object sender, RoutedEventArgs e)
+    {
+        if (LastSearchResult is not { State: "ok" } player) return;
+        int version = ++_cardVersion; _cardImage = null; _cardName = player.Username;
+        CardPreview.Source = null; SaveCardButton.IsEnabled = false; CardSaveStatus.Text = "正在加载 Minecraft 官方壁纸…"; ShowPanel(CardShade);
+        try
+        {
+            var wallpaperTask = LoadOfficialWallpaper();
+            var avatarTask = player.Avatar == null ? LoadAvatar(player.Username, player) : Task.CompletedTask;
+            await Task.WhenAll(wallpaperTask, avatarTask);
+            if (version != _cardVersion) return;
+            _cardImage = StatsCardRenderer.Render(player, await wallpaperTask, DateTime.Now);
+            CardPreview.Source = _cardImage; SaveCardButton.IsEnabled = true; CardSaveStatus.Text = "点击保存 PNG，图片将保存到「图片\\IMC.RE」文件夹。";
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or InvalidDataException or NotSupportedException or FormatException)
+        {
+            if (version == _cardVersion) CardSaveStatus.Text = "官方壁纸加载失败，请检查网络后重试。";
+        }
+    }
+    async Task<BitmapSource> LoadOfficialWallpaper()
+    {
+        if (_officialWallpaper != null) return _officialWallpaper;
+        const string url = "https://www.minecraft.net/content/dam/minecraftnet/games/minecraft/software/wallpapers_minecraft_ocean_monument_.zip";
+        using var response = await WallpaperHttp.GetAsync(url);
+        response.EnsureSuccessStatusCode();
+        if (response.Content.Headers.ContentLength is > 30_000_000) throw new InvalidDataException("Wallpaper archive is too large.");
+        var bytes = await response.Content.ReadAsByteArrayAsync();
+        if (bytes.Length > 30_000_000) throw new InvalidDataException("Wallpaper archive is too large.");
+        using var stream = new MemoryStream(bytes);
+        using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+        var entry = zip.GetEntry("wallpaper_minecraft_ocean_monument_1920x1080.png") ?? throw new InvalidDataException("Wallpaper not found.");
+        if (entry.Length > 10_000_000) throw new InvalidDataException("Wallpaper is too large.");
+        using var entryStream = entry.Open();
+        using var imageStream = new MemoryStream(); entryStream.CopyTo(imageStream); imageStream.Position = 0;
+        var image = new BitmapImage(); image.BeginInit(); image.CacheOption = BitmapCacheOption.OnLoad; image.StreamSource = imageStream; image.EndInit(); image.Freeze();
+        _officialWallpaper = image; return image;
+    }
+    void CloseCard_Click(object sender, RoutedEventArgs e) { _cardVersion++; HidePanel(CardShade); }
+    void SaveCard_Click(object sender, RoutedEventArgs e)
+    {
+        if (_cardImage == null) return;
+        try
+        {
+            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "IMC.RE");
+            var path = SaveCardPng(_cardImage, directory, _cardName, DateTime.Now);
+            CardSaveStatus.Text = "已保存：" + path;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        { CardSaveStatus.Text = "保存失败：" + ex.Message; }
+    }
+    static string SaveCardPng(BitmapSource image, string directory, string name, DateTime now)
+    {
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, $"{name}-{now:yyyyMMdd-HHmmss-fff}.png");
+        var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(image));
+        using (var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write)) encoder.Save(file);
+        return path;
+    }
     void Copy(PlayerRow p)
     {
         try { Clipboard.SetText(FormatStats(p)); FooterStatus.Text = $"已复制 {p.Username} 的战绩"; } catch { FooterStatus.Text = "复制失败，请稍后重试"; }
