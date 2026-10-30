@@ -1,0 +1,14 @@
+bin/
+obj/
+work/
+publish*/
+release*/
+legacy-go/
+*.exe
+*.exe~
+*.dll
+*.pdb
+*.deps.json
+*.runtimeconfig.json
+*.user
+*.suo

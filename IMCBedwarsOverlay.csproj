@@ -1,0 +1,13 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>IMCBedwarsOverlay-CSharp</AssemblyName>
+    <DefaultItemExcludes>$(DefaultItemExcludes);IMCBedwarsOverlay.exe;IMCBedwarsOverlay.exe~;legacy-go/**;publish/**;publish-single/**;publish-csharp/**;publish-framework/**;release-csharp/**;release-update/**;release-v3/**;release-v4/**;release-v5/**;release-v6/**;release-v7/**;work/**;bin/**;obj/**</DefaultItemExcludes>
+  </PropertyGroup>
+
+</Project>
