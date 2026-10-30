@@ -326,7 +326,7 @@ public partial class MainWindow : Window
             await Task.WhenAll(wallpaperTask, avatarTask);
             if (version != _cardVersion) return;
             _cardImage = StatsCardRenderer.Render(player, await wallpaperTask, DateTime.Now);
-            CardPreview.Source = _cardImage; SaveCardButton.IsEnabled = true; CardSaveStatus.Text = "点击保存 PNG，图片将保存到「图片\\IMC.RE」文件夹。";
+            CardPreview.Source = _cardImage; SaveCardButton.IsEnabled = true; CardSaveStatus.Text = "保存后将自动复制图片，文件保存在「图片\\IMC.RE」文件夹。";
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or InvalidDataException or NotSupportedException or FormatException)
         {
@@ -355,14 +355,23 @@ public partial class MainWindow : Window
     void SaveCard_Click(object sender, RoutedEventArgs e)
     {
         if (_cardImage == null) return;
+        string path;
         try
         {
             var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "IMC.RE");
-            var path = SaveCardPng(_cardImage, directory, _cardName, DateTime.Now);
-            CardSaveStatus.Text = "已保存：" + path;
+            path = SaveCardPng(_cardImage, directory, _cardName, DateTime.Now);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-        { CardSaveStatus.Text = "保存失败：" + ex.Message; }
+        { CardSaveStatus.Text = "保存失败：" + ex.Message; return; }
+        try
+        {
+            Clipboard.SetImage(_cardImage);
+            CardSaveStatus.Text = "已保存并复制图片：" + path;
+        }
+        catch (Exception ex) when (ex is ExternalException or InvalidOperationException)
+        {
+            CardSaveStatus.Text = "图片已保存，但复制失败，请重试。路径：" + path;
+        }
     }
     static string SaveCardPng(BitmapSource image, string directory, string name, DateTime now)
     {
