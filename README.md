@@ -24,3 +24,14 @@ dotnet publish .\IMCBedwarsOverlay.csproj -c Release -r win-x64 --self-contained
 ```
 
 配置存放在 `%APPDATA%\IMCBedwarsOverlay\config.json`。游戏客户端的日志位置和实际扫描行为取决于客户端版本；如自动扫描未识别，可使用「查询玩家」。
+
+## 发布新版本
+
+将版本标签推送到 GitHub 后，Actions 会自动构建独立的 Windows x64 程序、打包并创建 Release。例如：
+
+```powershell
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+包含连字符的标签（例如 `v1.1.0-beta.1`）会发布为预发行版本。普通分支推送不会自动创建 Release。
