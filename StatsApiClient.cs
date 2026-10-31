@@ -23,9 +23,38 @@ internal sealed class StatsApiClient
         if (!_http.DefaultRequestHeaders.UserAgent.Any()) _http.DefaultRequestHeaders.UserAgent.ParseAdd("IMC-BedWars-Overlay/2.0");
     }
 
-    public async Task<LeaderboardData> GetLeaderboardAsync(string mode, CancellationToken token = default)
+    public async Task<(bool Success, string Message, long ElapsedMs)> CheckConnectivityAsync(CancellationToken token = default)
     {
-        if (_lbCache.TryGetValue(mode, out var cached) && DateTime.UtcNow - cached.Time < TimeSpan.FromMinutes(10))
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            cts.CancelAfter(TimeSpan.FromSeconds(5));
+            using var req = new HttpRequestMessage(HttpMethod.Head, "https://api.imc.re/stats/bedwars/leaderboard");
+            using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
+            sw.Stop();
+            if (res.IsSuccessStatusCode)
+                return (true, $"连接成功（{sw.ElapsedMilliseconds} ms）", sw.ElapsedMilliseconds);
+
+            using var getReq = new HttpRequestMessage(HttpMethod.Get, "https://api.imc.re/stats/bedwars/leaderboard");
+            using var getRes = await _http.SendAsync(getReq, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
+            sw.Stop();
+            if (getRes.IsSuccessStatusCode)
+                return (true, $"连接成功（{sw.ElapsedMilliseconds} ms）", sw.ElapsedMilliseconds);
+
+            return (false, "无法连接到 api.imc.re，请检查防火墙或网络设置", sw.ElapsedMilliseconds);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch
+        {
+            sw.Stop();
+            return (false, "无法连接到 api.imc.re，请检查防火墙或网络设置", sw.ElapsedMilliseconds);
+        }
+    }
+
+    public async Task<LeaderboardData> GetLeaderboardAsync(string mode, bool force = false, CancellationToken token = default)
+    {
+        if (!force && _lbCache.TryGetValue(mode, out var cached) && DateTime.UtcNow - cached.Time < TimeSpan.FromMinutes(10))
             return cached.Data;
 
         try

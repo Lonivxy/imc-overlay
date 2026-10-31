@@ -9,6 +9,7 @@ sealed class PlayerComparer(string key, bool descending) : IComparer
     public int Compare(object? x, object? y)
     {
         if (x is not PlayerRow a || y is not PlayerRow b) return 0;
+        if (a.IsPinnedSelf != b.IsPinnedSelf) return a.IsPinnedSelf ? -1 : 1;
         if (a.State == "ok" && b.State != "ok") return -1;
         if (a.State != "ok" && b.State == "ok") return 1;
         if (key == "Rating" && a.OverallRating.HasValue != b.OverallRating.HasValue) return a.OverallRating.HasValue ? -1 : 1;
@@ -16,17 +17,18 @@ sealed class PlayerComparer(string key, bool descending) : IComparer
         {
             "Username" => StringComparer.OrdinalIgnoreCase.Compare(a.Username, b.Username),
             "threat" => ThreatRank(a).CompareTo(ThreatRank(b)),
-            "WinRate" => a.WinRate.CompareTo(b.WinRate),
-            "MVPs" => a.MVPs.CompareTo(b.MVPs),
-            "Fkdr" => a.Fkdr.CompareTo(b.Fkdr),
-            "BedsBroken" => a.BedsBroken.CompareTo(b.BedsBroken),
-            "FinalKills" => a.FinalKills.CompareTo(b.FinalKills),
-            "Kills" => a.Kills.CompareTo(b.Kills),
-            "Matches" => a.Matches.CompareTo(b.Matches),
-            "Rating" => Nullable.Compare(a.OverallRating, b.OverallRating),
-            "KD" => a.KD.CompareTo(b.KD),
-            "Adr" => a.Adr.CompareTo(b.Adr),
-            "HsRate" => a.HsRate.CompareTo(b.HsRate),
+            "WinRate" => a.WinRate != b.WinRate ? a.WinRate.CompareTo(b.WinRate) : a.Matches.CompareTo(b.Matches),
+            "MVPs" => a.MVPs != b.MVPs ? a.MVPs.CompareTo(b.MVPs) : a.Matches.CompareTo(b.Matches),
+            "Fkdr" => a.Fkdr != b.Fkdr ? a.Fkdr.CompareTo(b.Fkdr) : a.FinalKills.CompareTo(b.FinalKills),
+            "BedsBroken" => a.BedsBroken != b.BedsBroken ? a.BedsBroken.CompareTo(b.BedsBroken) : a.Matches.CompareTo(b.Matches),
+            "FinalKills" => a.FinalKills != b.FinalKills ? a.FinalKills.CompareTo(b.FinalKills) : a.Matches.CompareTo(b.Matches),
+            "Kills" => a.Kills != b.Kills ? a.Kills.CompareTo(b.Kills) : a.Matches.CompareTo(b.Matches),
+            "Matches" => a.Matches != b.Matches ? a.Matches.CompareTo(b.Matches) : a.Wins.CompareTo(b.Wins),
+            "Rating" => Nullable.Compare(a.OverallRating, b.OverallRating) != 0 ? Nullable.Compare(a.OverallRating, b.OverallRating) : a.Matches.CompareTo(b.Matches),
+            "KD" => a.KD != b.KD ? a.KD.CompareTo(b.KD) : a.Kills.CompareTo(b.Kills),
+            "Adr" => a.Adr != b.Adr ? a.Adr.CompareTo(b.Adr) : a.Matches.CompareTo(b.Matches),
+            "HsRate" => a.HsRate != b.HsRate ? a.HsRate.CompareTo(b.HsRate) : a.Matches.CompareTo(b.Matches),
+            "名次" => Nullable.Compare(a.LeaderboardDisplayRank.Rank, b.LeaderboardDisplayRank.Rank),
             _ => 0
         };
         if (result != 0) return descending ? -result : result;
@@ -39,6 +41,8 @@ public sealed class PlayerRow : INotifyPropertyChanged
 {
     public event PropertyChangedEventHandler? PropertyChanged;
     string _state = "loading", _error = ""; public string Username { get; set; } = ""; public string GameMode { get; set; } = "bedwars";
+    bool _isPinnedSelf;
+    public bool IsPinnedSelf { get => _isPinnedSelf; set { _isPinnedSelf = value; Changed(nameof(IsPinnedSelf)); } }
     ImageSource? _avatar;
     public ImageSource? Avatar { get => _avatar; set { _avatar = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Avatar))); } }
     public long Matches { get; set; } public long Wins { get; set; } public long MVPs { get; set; } public long BedsBroken { get; set; } public long FinalKills { get; set; } public long Kills { get; set; }
@@ -61,6 +65,7 @@ public sealed class PlayerRow : INotifyPropertyChanged
     public string MatchesLabel => State == "ok" ? $"{Matches} 场" : State == "loading" ? "查询中…" : State == "unregistered" ? "无记录" : "查询失败";
 
     StatRankInfo _winRateRank = StatRankInfo.Empty;
+    StatRankInfo _winsRank = StatRankInfo.Empty;
     StatRankInfo _mvpRank = StatRankInfo.Empty;
     StatRankInfo _ratingRank = StatRankInfo.Empty;
     StatRankInfo _fkdrRank = StatRankInfo.Empty;
@@ -71,8 +76,10 @@ public sealed class PlayerRow : INotifyPropertyChanged
     StatRankInfo _kdRank = StatRankInfo.Empty;
     StatRankInfo _adrRank = StatRankInfo.Empty;
     StatRankInfo _hsRateRank = StatRankInfo.Empty;
+    StatRankInfo _leaderboardDisplayRank = StatRankInfo.Empty;
 
     public StatRankInfo WinRateRank { get => _winRateRank; set { _winRateRank = value; Changed(nameof(WinRateRank)); } }
+    public StatRankInfo WinsRank { get => _winsRank; set { _winsRank = value; Changed(nameof(WinsRank)); } }
     public StatRankInfo MVPRank { get => _mvpRank; set { _mvpRank = value; Changed(nameof(MVPRank)); } }
     public StatRankInfo RatingRank { get => _ratingRank; set { _ratingRank = value; Changed(nameof(RatingRank)); } }
     public StatRankInfo FkdrRank { get => _fkdrRank; set { _fkdrRank = value; Changed(nameof(FkdrRank)); } }
@@ -83,6 +90,7 @@ public sealed class PlayerRow : INotifyPropertyChanged
     public StatRankInfo KDRank { get => _kdRank; set { _kdRank = value; Changed(nameof(KDRank)); } }
     public StatRankInfo AdrRank { get => _adrRank; set { _adrRank = value; Changed(nameof(AdrRank)); } }
     public StatRankInfo HsRateRank { get => _hsRateRank; set { _hsRateRank = value; Changed(nameof(HsRateRank)); } }
+    public StatRankInfo LeaderboardDisplayRank { get => _leaderboardDisplayRank; set { _leaderboardDisplayRank = value; Changed(nameof(LeaderboardDisplayRank)); } }
 
     public void ApplyLeaderboard(LeaderboardData? lb)
     {
@@ -95,6 +103,7 @@ public sealed class PlayerRow : INotifyPropertyChanged
         if (lb == null || lb.Players.Count == 0)
         {
             WinRateRank = StatRankInfo.None;
+            WinsRank = StatRankInfo.None;
             MVPRank = StatRankInfo.None;
             RatingRank = StatRankInfo.None;
             FkdrRank = StatRankInfo.None;
@@ -109,6 +118,7 @@ public sealed class PlayerRow : INotifyPropertyChanged
         }
 
         WinRateRank = new StatRankInfo(WinRate > 0 ? lb.GetRankWinRate(WinRate) : null);
+        WinsRank = new StatRankInfo(lb.GetRankWins(Wins));
         MVPRank = new StatRankInfo(lb.GetRankMVPs(MVPs));
         RatingRank = new StatRankInfo(lb.GetRankRating(OverallRating));
         FkdrRank = new StatRankInfo(lb.GetRankFkdr(Fkdr));
@@ -124,6 +134,7 @@ public sealed class PlayerRow : INotifyPropertyChanged
     public void ResetRanks()
     {
         WinRateRank = StatRankInfo.Empty;
+        WinsRank = StatRankInfo.Empty;
         MVPRank = StatRankInfo.Empty;
         RatingRank = StatRankInfo.Empty;
         FkdrRank = StatRankInfo.Empty;
@@ -134,6 +145,7 @@ public sealed class PlayerRow : INotifyPropertyChanged
         KDRank = StatRankInfo.Empty;
         AdrRank = StatRankInfo.Empty;
         HsRateRank = StatRankInfo.Empty;
+        LeaderboardDisplayRank = StatRankInfo.Empty;
     }
 
     public void CopyFrom(PlayerRow x)
@@ -142,9 +154,12 @@ public sealed class PlayerRow : INotifyPropertyChanged
         BedsBroken = x.BedsBroken; FinalKills = x.FinalKills; Kills = x.Kills; WinRate = x.WinRate;
         Fkdr = x.Fkdr; AvgBeds = x.AvgBeds; KD = x.KD; Rating = x.Rating; Adr = x.Adr; HsRate = x.HsRate;
         Error = x.Error; State = x.State;
-        WinRateRank = x.WinRateRank; MVPRank = x.MVPRank; RatingRank = x.RatingRank; FkdrRank = x.FkdrRank;
+        WinRateRank = x.WinRateRank; WinsRank = x.WinsRank; MVPRank = x.MVPRank; RatingRank = x.RatingRank; FkdrRank = x.FkdrRank;
         BedsRank = x.BedsRank; FinalsRank = x.FinalsRank; KillsRank = x.KillsRank; MatchesRank = x.MatchesRank;
         KDRank = x.KDRank; AdrRank = x.AdrRank; HsRateRank = x.HsRateRank;
+        if (x.IsPinnedSelf) IsPinnedSelf = true;
+        if (x.Avatar != null) Avatar = x.Avatar;
+        if (x.LeaderboardDisplayRank != StatRankInfo.Empty) LeaderboardDisplayRank = x.LeaderboardDisplayRank;
         Changed(string.Empty);
     }
 
@@ -157,9 +172,10 @@ public sealed class PlayerRow : INotifyPropertyChanged
             nameof(OverallRating), nameof(IsHighRating), nameof(IsWarningRating), nameof(RatingLabel),
             nameof(RatingInfo), nameof(ThreatLabel), nameof(WinRateLabel), nameof(FkdrLabel),
             nameof(MatchesLabel), nameof(MVPsLabel), nameof(BedsLabel), nameof(FinalsLabel),
-            nameof(KillsLabel), nameof(WinRateRank), nameof(MVPRank), nameof(RatingRank),
+            nameof(KillsLabel), nameof(WinRateRank), nameof(WinsRank), nameof(MVPRank), nameof(RatingRank),
             nameof(FkdrRank), nameof(BedsRank), nameof(FinalsRank), nameof(KillsRank),
-            nameof(MatchesRank), nameof(KDRank), nameof(AdrRank), nameof(HsRateRank)
+            nameof(MatchesRank), nameof(KDRank), nameof(AdrRank), nameof(HsRateRank), nameof(IsPinnedSelf),
+            nameof(LeaderboardDisplayRank)
         })
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(p));
     }

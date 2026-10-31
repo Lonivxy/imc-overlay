@@ -50,8 +50,12 @@ public partial class MainWindow : Window
     double _resizeWidth;
     string _statusBeforeResize = "";
     static readonly ConcurrentDictionary<string, ImageSource> AvatarCache = new(StringComparer.OrdinalIgnoreCase);
-    static readonly SemaphoreSlim AvatarSlots = new(4, 4);
+    static readonly ConcurrentDictionary<string, Task<ImageSource?>> AvatarInFlight = new(StringComparer.OrdinalIgnoreCase);
+    static readonly SemaphoreSlim AvatarSlots = new(6, 6);
     static readonly Regex UserRegex = new(@"^[A-Za-z0-9_]{3,16}$", RegexOptions.Compiled);
+    string _myPlayerName = "";
+    readonly ObservableCollection<PlayerRow> LeaderboardRows = [];
+    string _lbSortKey = "Rating"; bool _lbSortDescending = true;
     LeaderboardData _currentLeaderboard = LeaderboardData.Empty;
     readonly ObservableCollection<PlayerRow> Players = [];
     readonly Dictionary<string, PlayerRow> ByName = new(StringComparer.OrdinalIgnoreCase);
@@ -67,6 +71,9 @@ public partial class MainWindow : Window
         InitializeComponent(); PlayersGrid.ItemsSource = Players;
         ((ListCollectionView)CollectionViewSource.GetDefaultView(Players)).CustomSort = new PlayerComparer(_sortKey, _sortDescending);
         PlayersGrid.Columns.First(c => c.SortMemberPath == _sortKey).SortDirection = ListSortDirection.Descending;
+        LeaderboardGrid.ItemsSource = LeaderboardRows;
+        ((ListCollectionView)CollectionViewSource.GetDefaultView(LeaderboardRows)).CustomSort = new PlayerComparer(_lbSortKey, _lbSortDescending);
+        LeaderboardGrid.Columns.FirstOrDefault(c => c.SortMemberPath == _lbSortKey)?.SortDirection = ListSortDirection.Descending;
         if (!Http.DefaultRequestHeaders.UserAgent.Any()) Http.DefaultRequestHeaders.UserAgent.ParseAdd("IMC-BedWars-Overlay/2.0");
         LoadConfig();
         _logWatcher = new MinecraftLogWatcher(OnLogEvent, _forceImc);
@@ -74,20 +81,21 @@ public partial class MainWindow : Window
         ApplyMode(_mode, false);
         if (_interactiveServices) { KeyTimer.Tick += PollKeys; KeyTimer.Start(); }
         if (startLogWatcher) _logWatcher.Start();
-        if (_interactiveServices) _ = RefreshLeaderboardAsync(_mode);
+        if (_interactiveServices) { _ = CheckStartupConnectivityAsync(); _ = RefreshLeaderboardAsync(_mode); }
         Players.CollectionChanged += (_, _) => UpdateSummary();
     }
 
     void LoadConfig()
     {
-        var settings = _config.Load(); _forceImc = settings.ForceImc; _mode = settings.GameMode; OpacitySlider.Value = settings.Opacity;
+        var settings = _config.Load(); _forceImc = settings.ForceImc; _mode = settings.GameMode; _myPlayerName = settings.PlayerName; OpacitySlider.Value = settings.Opacity;
+        MyPlayerNameBox.Text = _myPlayerName;
         ForceImcBox.IsChecked = _forceImc;
         ModeCombo.SelectedIndex = _mode == "counterember" ? 1 : 0;
         Opacity = OpacitySlider.Value;
     }
     void SaveConfig()
     {
-        _config.Save(new AppSettings(_forceImc, OpacitySlider.Value, _mode));
+        _config.Save(new AppSettings(_forceImc, OpacitySlider.Value, _mode, _myPlayerName));
     }
     void Window_SourceInitialized(object? sender, EventArgs e)
     {
@@ -168,29 +176,130 @@ public partial class MainWindow : Window
     {
         if (!UserRegex.IsMatch(name)) return;
         if (ByName.ContainsKey(name)) return;
-        var mode = _mode; var row = new PlayerRow { Username = name, State = "loading", GameMode = mode }; ByName[name] = row; Players.Add(row); _ = LoadStats(name, row, mode, _rosterRequests.Token); _ = LoadAvatar(name, row);
+        var mode = _mode;
+        var row = new PlayerRow { Username = name, State = "loading", GameMode = mode };
+        if (AvatarCache.TryGetValue(name, out var cached))
+            row.Avatar = cached;
+        ByName[name] = row;
+        Players.Add(row);
+        _ = LoadStats(name, row, mode, _rosterRequests.Token);
+        _ = LoadAvatar(name, row);
     }
     async Task LoadAvatar(string name, PlayerRow row)
     {
-        if (AvatarCache.TryGetValue(name, out var cached)) { row.Avatar = cached; return; }
-        await AvatarSlots.WaitAsync();
+        if (string.IsNullOrWhiteSpace(name)) return;
+        if (AvatarCache.TryGetValue(name, out var cached))
+        {
+            SetRowAvatar(row, cached);
+            return;
+        }
+
+        Task<ImageSource?> task;
+        lock (AvatarInFlight)
+        {
+            if (AvatarCache.TryGetValue(name, out cached))
+            {
+                SetRowAvatar(row, cached);
+                return;
+            }
+
+            if (!AvatarInFlight.TryGetValue(name, out task!))
+            {
+                task = FetchAvatarAsync(name);
+                AvatarInFlight[name] = task;
+            }
+        }
+
         try
         {
-            var bytes = await Http.GetByteArrayAsync("https://mc-heads.net/avatar/" + Uri.EscapeDataString(name) + "/32");
-            using var stream = new MemoryStream(bytes);
-            var image = new BitmapImage(); image.BeginInit(); image.CacheOption = BitmapCacheOption.OnLoad; image.StreamSource = stream; image.EndInit(); image.Freeze();
-            AvatarCache[name] = image; row.Avatar = image;
+            var image = await task.ConfigureAwait(false);
+            if (image != null)
+            {
+                SetRowAvatar(row, image);
+            }
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or NotSupportedException or FormatException or ArgumentException) { }
-        finally { AvatarSlots.Release(); }
+        catch { }
+        finally
+        {
+            AvatarInFlight.TryRemove(name, out _);
+        }
     }
+
+    static async Task<ImageSource?> FetchAvatarAsync(string name)
+    {
+        if (AvatarCache.TryGetValue(name, out var cached)) return cached;
+
+        await AvatarSlots.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (AvatarCache.TryGetValue(name, out cached)) return cached;
+
+            string[] urls = [
+                $"https://crafthead.net/avatar/{Uri.EscapeDataString(name)}/32",
+                $"https://mc-heads.net/avatar/{Uri.EscapeDataString(name)}/32",
+                $"https://minotar.net/avatar/{Uri.EscapeDataString(name)}/32",
+                $"https://cravatar.eu/avatar/{Uri.EscapeDataString(name)}/32"
+            ];
+
+            byte[]? bytes = null;
+            foreach (var url in urls)
+            {
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    bytes = await Http.GetByteArrayAsync(url, cts.Token).ConfigureAwait(false);
+                    if (bytes != null && bytes.Length > 0) break;
+                }
+                catch { }
+            }
+
+            if (bytes != null && bytes.Length > 0)
+            {
+                using var stream = new MemoryStream(bytes);
+                var image = new BitmapImage();
+                image.BeginInit();
+                image.CacheOption = BitmapCacheOption.OnLoad;
+                image.StreamSource = stream;
+                image.EndInit();
+                image.Freeze();
+
+                AvatarCache[name] = image;
+                return image;
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException or NotSupportedException or FormatException or ArgumentException) { }
+        finally
+        {
+            AvatarSlots.Release();
+        }
+        return null;
+    }
+
+    void SetRowAvatar(PlayerRow row, ImageSource avatar)
+    {
+        if (Dispatcher.CheckAccess())
+            row.Avatar = avatar;
+        else
+            _ = Dispatcher.InvokeAsync(() => row.Avatar = avatar);
+    }
+
     async Task LoadStats(string name, PlayerRow target, string mode, CancellationToken token)
     {
         try
         {
             var result = await _statsApi.FetchAsync(name, mode, token);
             if (!token.IsCancellationRequested && !_closing && _mode == mode && ByName.TryGetValue(name, out var current) && ReferenceEquals(current, target))
-            { result.ApplyLeaderboard(_currentLeaderboard); target.CopyFrom(result); CollectionViewSource.GetDefaultView(Players).Refresh(); }
+            {
+                var curAvatar = target.Avatar;
+                result.ApplyLeaderboard(_currentLeaderboard);
+                target.CopyFrom(result);
+                if (target.Avatar == null)
+                {
+                    if (curAvatar != null) target.Avatar = curAvatar;
+                    else if (AvatarCache.TryGetValue(name, out var cached)) target.Avatar = cached;
+                }
+                CollectionViewSource.GetDefaultView(Players).Refresh();
+            }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
     }
@@ -255,7 +364,7 @@ public partial class MainWindow : Window
     void OpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) { Opacity = e.NewValue; }
     void Close_Click(object sender, RoutedEventArgs e) => Close();
     void ModalClose_Click(object sender, RoutedEventArgs e) { _searchRequests.Cancel(); _searchVersion++; HidePanel(ModalShade); }
-    void SettingsClose_Click(object sender, RoutedEventArgs e) { _forceImc = ForceImcBox.IsChecked == true; _logWatcher.SetForceImc(_forceImc); ApplyMode(ModeCombo.SelectedIndex == 1 ? "counterember" : "bedwars", true); SaveConfig(); HidePanel(SettingsShade); }
+    void SettingsClose_Click(object sender, RoutedEventArgs e) { _forceImc = ForceImcBox.IsChecked == true; _myPlayerName = MyPlayerNameBox.Text.Trim(); _logWatcher.SetForceImc(_forceImc); ApplyMode(ModeCombo.SelectedIndex == 1 ? "counterember" : "bedwars", true); SaveConfig(); HidePanel(SettingsShade); }
     void ApplyMode(string mode, bool refresh)
     {
         bool changed = _mode != mode; _mode = mode; _searchRequests.Cancel(); _searchVersion++;
@@ -271,6 +380,17 @@ public partial class MainWindow : Window
         _sortKey = "Rating"; _sortDescending = true;
         foreach (var col in PlayersGrid.Columns) col.SortDirection = col.SortMemberPath == _sortKey ? ListSortDirection.Descending : null;
         ((ListCollectionView)CollectionViewSource.GetDefaultView(Players)).CustomSort = new PlayerComparer(_sortKey, true);
+        foreach (var col in LeaderboardGrid.Columns) { var key = col.SortMemberPath; bool bwOnly = key is "Fkdr" or "BedsBroken" or "FinalKills"; bool ceOnly = key is "KD" or "Adr" or "HsRate"; col.Visibility = (bwOnly && ce) || (ceOnly && !ce) ? Visibility.Collapsed : Visibility.Visible; }
+        if (LbCategoryBar != null)
+        {
+            LbCatFkdr.Visibility = ce ? Visibility.Collapsed : Visibility.Visible;
+            LbCatBeds.Visibility = ce ? Visibility.Collapsed : Visibility.Visible;
+            LbCatFinals.Visibility = ce ? Visibility.Collapsed : Visibility.Visible;
+            LbCatKd.Visibility = ce ? Visibility.Visible : Visibility.Collapsed;
+            LbCatAdr.Visibility = ce ? Visibility.Visible : Visibility.Collapsed;
+            LbCatHsRate.Visibility = ce ? Visibility.Visible : Visibility.Collapsed;
+        }
+        if (_interactiveServices) UpdateMyRankSummary();
         if (changed && refresh) { var names = Players.Select(p => p.Username).ToArray(); SetRoster(names); FooterStatus.Text = "已切换模式，正在重新查询名单…"; LastSearchResult = null; }
         if (_interactiveServices) _ = RefreshLeaderboardAsync(mode);
     }
@@ -377,5 +497,436 @@ public partial class MainWindow : Window
     void UpdateSummary()
     {
         EmptyPanel.Visibility = Players.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    async Task CheckStartupConnectivityAsync()
+    {
+        try
+        {
+            var (success, msg, ms) = await _statsApi.CheckConnectivityAsync().ConfigureAwait(false);
+            if (!success)
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    NetWarningBanner.Visibility = Visibility.Visible;
+                    FooterStatus.Text = "网络异常：无法连接到 api.imc.re，请检查防火墙或网络设置";
+                });
+            }
+        }
+        catch { }
+    }
+
+    async void TestApiButton_Click(object sender, RoutedEventArgs e)
+    {
+        TestApiButton.IsEnabled = false;
+        TestApiStatus.Text = "正在测试连接 api.imc.re…";
+        TestApiStatus.Foreground = (SolidColorBrush)FindResource("Muted");
+        var (success, msg, ms) = await _statsApi.CheckConnectivityAsync().ConfigureAwait(true);
+        TestApiButton.IsEnabled = true;
+        if (success)
+        {
+            TestApiStatus.Text = $"✓ 连接成功（延迟 {ms} ms）";
+            TestApiStatus.Foreground = new SolidColorBrush(Color.FromRgb(74, 222, 128));
+            NetWarningBanner.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            TestApiStatus.Text = "✗ 无法连接到 api.imc.re，请检查防火墙或网络设置";
+            TestApiStatus.Foreground = new SolidColorBrush(Color.FromRgb(248, 113, 113));
+            NetWarningBanner.Visibility = Visibility.Visible;
+        }
+    }
+
+    async void RetryNetworkTest_Click(object sender, RoutedEventArgs e)
+    {
+        FooterStatus.Text = "正在重新测试连接 api.imc.re…";
+        var (success, msg, ms) = await _statsApi.CheckConnectivityAsync().ConfigureAwait(true);
+        if (success)
+        {
+            NetWarningBanner.Visibility = Visibility.Collapsed;
+            FooterStatus.Text = $"连接恢复正常（{ms} ms）";
+        }
+        else
+        {
+            NetWarningBanner.Visibility = Visibility.Visible;
+            FooterStatus.Text = "重试失败：无法连接到 api.imc.re，请检查防火墙或网络设置";
+        }
+    }
+
+    void CloseWarningBanner_Click(object sender, RoutedEventArgs e)
+    {
+        NetWarningBanner.Visibility = Visibility.Collapsed;
+    }
+
+    void MyPlayerNameBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        _myPlayerName = MyPlayerNameBox.Text.Trim();
+        UpdateMyRankSummary();
+    }
+
+    void UpdateMyRankSummary()
+    {
+        if (string.IsNullOrWhiteSpace(_myPlayerName))
+        {
+            MyRankStatus.Text = "";
+            return;
+        }
+
+        if (_currentLeaderboard.Players.Count > 0)
+        {
+            var found = _currentLeaderboard.Players.FirstOrDefault(p => string.Equals(p.Name, _myPlayerName, StringComparison.OrdinalIgnoreCase));
+            if (found != null)
+            {
+                double rating = _mode == "counterember" ? found.Metrics.Rating : (BedwarsRatingCalculator.Calculate(found.Matches, found.WinRate, found.Metrics.Fkdr, found.Metrics.AvgBeds) ?? 0.0);
+                int? rank = _currentLeaderboard.GetRankRating(rating);
+                MyRankStatus.Text = rank.HasValue ? $"全服 #{rank} (Rating {rating:F2})" : $"未入榜 (Rating {rating:F2})";
+                return;
+            }
+        }
+        MyRankStatus.Text = "查询中…";
+        _ = FetchMyRankSummaryAsync(_myPlayerName, _mode);
+    }
+
+    async Task FetchMyRankSummaryAsync(string name, string mode)
+    {
+        try
+        {
+            var row = await _statsApi.FetchAsync(name, mode, CancellationToken.None).ConfigureAwait(true);
+            if (string.Equals(_myPlayerName, name, StringComparison.OrdinalIgnoreCase))
+            {
+                if (row.State == "ok" && row.OverallRating.HasValue)
+                {
+                    int? rank = _currentLeaderboard.GetRankRating(row.OverallRating.Value);
+                    MyRankStatus.Text = rank.HasValue ? $"全服 #{rank} (Rating {row.OverallRating:F2})" : $"未入榜 (Rating {row.OverallRating:F2})";
+                }
+                else
+                {
+                    MyRankStatus.Text = "暂无榜单记录";
+                }
+            }
+        }
+        catch
+        {
+            if (string.Equals(_myPlayerName, name, StringComparison.OrdinalIgnoreCase))
+                MyRankStatus.Text = "未查到战绩";
+        }
+    }
+
+    void Leaderboard_Click(object sender, RoutedEventArgs e)
+    {
+        ShowPanel(LeaderboardShade);
+        _ = SwitchLeaderboardCategoryAsync(_lbSortKey, _lbSortDescending);
+    }
+
+    void LeaderboardClose_Click(object sender, RoutedEventArgs e)
+    {
+        HidePanel(LeaderboardShade);
+    }
+
+    async void LeaderboardRefresh_Click(object sender, RoutedEventArgs e)
+    {
+        FooterStatus.Text = "正在刷新天梯排行榜…";
+        var lb = await _statsApi.GetLeaderboardAsync(_mode, force: true).ConfigureAwait(true);
+        _currentLeaderboard = lb;
+        foreach (var p in Players) p.ApplyLeaderboard(_currentLeaderboard);
+        LastSearchResult?.ApplyLeaderboard(_currentLeaderboard);
+        UpdateMyRankSummary();
+        await SwitchLeaderboardCategoryAsync(_lbSortKey, _lbSortDescending).ConfigureAwait(true);
+        FooterStatus.Text = $"天梯排行榜已刷新（{lb.Players.Count} 位达标玩家）";
+    }
+
+    async void LbCategory_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn && btn.Tag is string key)
+        {
+            await SwitchLeaderboardCategoryAsync(key, true).ConfigureAwait(true);
+        }
+    }
+
+    void UpdateCategoryButtons(string activeKey)
+    {
+        if (LbCategoryBar == null) return;
+        var activeBg = (SolidColorBrush?)FindResource("Blue") ?? new SolidColorBrush(Color.FromRgb(2, 132, 199));
+        var inactiveBg = new SolidColorBrush(Color.FromRgb(23, 34, 51));
+        var activeBorder = new SolidColorBrush(Color.FromRgb(56, 189, 248));
+        var inactiveBorder = new SolidColorBrush(Color.FromRgb(42, 57, 77));
+        var activeFg = Brushes.White;
+        var inactiveFg = new SolidColorBrush(Color.FromRgb(148, 163, 184));
+
+        foreach (var child in LbCategoryBar.Children)
+        {
+            if (child is Button btn && btn.Tag is string tag)
+            {
+                bool isActive = string.Equals(tag, activeKey, StringComparison.OrdinalIgnoreCase);
+                btn.Background = isActive ? activeBg : inactiveBg;
+                btn.Foreground = isActive ? activeFg : inactiveFg;
+                btn.BorderBrush = isActive ? activeBorder : inactiveBorder;
+                btn.FontWeight = isActive ? FontWeights.Bold : FontWeights.SemiBold;
+            }
+        }
+    }
+
+    static StatRankInfo? GetRankForMetric(PlayerRow row, string metric) => metric switch
+    {
+        "Rating" => row.RatingRank,
+        "WinRate" => row.WinRateRank,
+        "MVPs" => row.MVPRank,
+        "Fkdr" => row.FkdrRank,
+        "BedsBroken" => row.BedsRank,
+        "FinalKills" => row.FinalsRank,
+        "Kills" => row.KillsRank,
+        "Matches" => row.MatchesRank,
+        "KD" => row.KDRank,
+        "Adr" => row.AdrRank,
+        "HsRate" => row.HsRateRank,
+        _ => row.RatingRank
+    };
+
+    async Task SwitchLeaderboardCategoryAsync(string metric, bool descending = true)
+    {
+        _lbSortKey = metric;
+        _lbSortDescending = descending;
+
+        if (_currentLeaderboard.Players.Count == 0)
+        {
+            _currentLeaderboard = await _statsApi.GetLeaderboardAsync(_mode).ConfigureAwait(true);
+            foreach (var p in Players) p.ApplyLeaderboard(_currentLeaderboard);
+            LastSearchResult?.ApplyLeaderboard(_currentLeaderboard);
+        }
+
+        bool ce = _mode == "counterember";
+        foreach (var col in LeaderboardGrid.Columns)
+        {
+            var k = col.SortMemberPath;
+            bool bwOnly = k is "Fkdr" or "BedsBroken" or "FinalKills";
+            bool ceOnly = k is "KD" or "Adr" or "HsRate";
+            col.Visibility = (bwOnly && ce) || (ceOnly && !ce) ? Visibility.Collapsed : Visibility.Visible;
+            col.SortDirection = col.SortMemberPath == metric ? (descending ? ListSortDirection.Descending : ListSortDirection.Ascending) : null;
+        }
+
+        if (LbCategoryBar != null)
+        {
+            LbCatFkdr.Visibility = ce ? Visibility.Collapsed : Visibility.Visible;
+            LbCatBeds.Visibility = ce ? Visibility.Collapsed : Visibility.Visible;
+            LbCatFinals.Visibility = ce ? Visibility.Collapsed : Visibility.Visible;
+            LbCatKd.Visibility = ce ? Visibility.Visible : Visibility.Collapsed;
+            LbCatAdr.Visibility = ce ? Visibility.Visible : Visibility.Collapsed;
+            LbCatHsRate.Visibility = ce ? Visibility.Visible : Visibility.Collapsed;
+            UpdateCategoryButtons(metric);
+        }
+
+        string metricName = metric switch
+        {
+            "Rating" => "Rating 榜",
+            "WinRate" => "胜率榜",
+            "MVPs" => "MVP 榜",
+            "Fkdr" => "FKDR 榜",
+            "BedsBroken" => "拆床榜",
+            "FinalKills" => "终杀榜",
+            "Kills" => "击杀榜",
+            "Matches" => "场次榜",
+            "KD" => "K/D 榜",
+            "Adr" => "ADR 榜",
+            "HsRate" => "爆头率榜",
+            _ => "Rating 榜"
+        };
+        LbSubTitle.Text = $" (Top 50 · {metricName}) — {(ce ? "CounterEmber" : "起床战争")}";
+
+        var allRows = _currentLeaderboard.Players
+            .Select(p => FromLeaderboardPlayer(p, _mode, _currentLeaderboard))
+            .ToList();
+
+        IEnumerable<PlayerRow> sorted = metric switch
+        {
+            "Rating" => allRows.OrderByDescending(r => r.OverallRating ?? 0.0).ThenByDescending(r => r.Matches),
+            "WinRate" => allRows.OrderByDescending(r => r.WinRate).ThenByDescending(r => r.Matches),
+            "MVPs" => allRows.OrderByDescending(r => r.MVPs).ThenByDescending(r => r.Matches),
+            "Fkdr" => allRows.OrderByDescending(r => r.Fkdr).ThenByDescending(r => r.FinalKills),
+            "BedsBroken" => allRows.OrderByDescending(r => r.BedsBroken).ThenByDescending(r => r.Matches),
+            "FinalKills" => allRows.OrderByDescending(r => r.FinalKills).ThenByDescending(r => r.Matches),
+            "Kills" => allRows.OrderByDescending(r => r.Kills).ThenByDescending(r => r.Matches),
+            "Matches" => allRows.OrderByDescending(r => r.Matches).ThenByDescending(r => r.Wins),
+            "KD" => allRows.OrderByDescending(r => r.KD).ThenByDescending(r => r.Kills),
+            "Adr" => allRows.OrderByDescending(r => r.Adr).ThenByDescending(r => r.Matches),
+            "HsRate" => allRows.OrderByDescending(r => r.HsRate).ThenByDescending(r => r.Matches),
+            _ => allRows.OrderByDescending(r => r.OverallRating ?? 0.0).ThenByDescending(r => r.Matches)
+        };
+
+        if (!descending)
+            sorted = sorted.Reverse();
+
+        var top50 = sorted.Take(50).ToList();
+        for (int i = 0; i < top50.Count; i++)
+        {
+            var r = top50[i];
+            var rk = GetRankForMetric(r, metric);
+            if (rk == null || rk.Rank == null || rk.Rank <= 0)
+                rk = new StatRankInfo(i + 1);
+            r.LeaderboardDisplayRank = rk;
+        }
+
+        LeaderboardRows.Clear();
+
+        if (!string.IsNullOrWhiteSpace(_myPlayerName))
+        {
+            PlayerRow? myRow = allRows.FirstOrDefault(r => string.Equals(r.Username, _myPlayerName, StringComparison.OrdinalIgnoreCase));
+            if (myRow == null)
+            {
+                try
+                {
+                    var fetched = await _statsApi.FetchAsync(_myPlayerName, _mode, CancellationToken.None).ConfigureAwait(true);
+                    if (fetched.State == "ok")
+                    {
+                        myRow = new PlayerRow();
+                        myRow.CopyFrom(fetched);
+                        myRow.ApplyLeaderboard(_currentLeaderboard);
+                    }
+                }
+                catch { }
+            }
+
+            if (myRow != null)
+            {
+                var pinned = new PlayerRow();
+                pinned.CopyFrom(myRow);
+                pinned.IsPinnedSelf = true;
+                pinned.LeaderboardDisplayRank = GetRankForMetric(pinned, metric) ?? StatRankInfo.None;
+                if (pinned.Avatar == null && AvatarCache.TryGetValue(pinned.Username, out var myAvatar))
+                    pinned.Avatar = myAvatar;
+                LeaderboardRows.Add(pinned);
+
+                string valStr = metric switch
+                {
+                    "WinRate" => $"胜率: {pinned.WinRate:P1}",
+                    "MVPs" => $"MVP: {pinned.MVPs}",
+                    "Fkdr" => $"FKDR: {pinned.Fkdr:F2}",
+                    "BedsBroken" => $"拆床: {pinned.BedsBroken}",
+                    "FinalKills" => $"终杀: {pinned.FinalKills}",
+                    "Kills" => $"击杀: {pinned.Kills}",
+                    "Matches" => $"场次: {pinned.Matches}",
+                    "KD" => $"K/D: {pinned.KD:F2}",
+                    "Adr" => $"ADR: {pinned.Adr:F1}",
+                    "HsRate" => $"爆头率: {pinned.HsRate:P1}",
+                    _ => $"Rating: {pinned.OverallRating:F2}"
+                };
+                LbMySummary.Text = $"我的全服排名: {pinned.LeaderboardDisplayRank.Tag} ({metricName}) · {valStr} · Rating: {pinned.OverallRating:F2} ({pinned.RatingRank.Tag})";
+            }
+            else
+            {
+                var placeholder = new PlayerRow
+                {
+                    Username = _myPlayerName,
+                    State = "unregistered",
+                    GameMode = _mode,
+                    IsPinnedSelf = true,
+                    LeaderboardDisplayRank = StatRankInfo.None
+                };
+                placeholder.ApplyLeaderboard(_currentLeaderboard);
+                LeaderboardRows.Add(placeholder);
+                LbMySummary.Text = "我的全服天梯排名: #- · 暂无战绩记录";
+            }
+        }
+        else
+        {
+            LbMySummary.Text = "提示：在【设置】中绑定您的游戏 ID，即可在此置顶查看个人全服排名。";
+        }
+
+        foreach (var r in top50)
+        {
+            LeaderboardRows.Add(r);
+        }
+
+        foreach (var r in LeaderboardRows)
+        {
+            if (r.Avatar == null)
+            {
+                _ = LoadAvatar(r.Username, r);
+            }
+        }
+
+        ((ListCollectionView)CollectionViewSource.GetDefaultView(LeaderboardRows)).CustomSort = new PlayerComparer(metric, descending);
+    }
+
+    static PlayerRow FromLeaderboardPlayer(LeaderboardPlayer p, string mode, LeaderboardData lb)
+    {
+        var row = new PlayerRow
+        {
+            Username = p.Name,
+            GameMode = mode,
+            State = "ok",
+            Matches = p.Matches,
+            Wins = p.Wins,
+            MVPs = p.Mvps,
+            WinRate = p.WinRate,
+            Fkdr = p.Metrics.Fkdr,
+            BedsBroken = p.Metrics.BedsBroken,
+            FinalKills = p.Metrics.FinalKills,
+            Kills = p.Metrics.Kills,
+            AvgBeds = p.Metrics.AvgBeds,
+            KD = p.Metrics.Kd,
+            Rating = p.Metrics.Rating,
+            Adr = p.Metrics.Adr,
+            HsRate = p.Metrics.HsRate
+        };
+        if (AvatarCache.TryGetValue(p.Name, out var cached))
+        {
+            row.Avatar = cached;
+        }
+        row.ApplyLeaderboard(lb);
+        return row;
+    }
+
+    async void LeaderboardGrid_Sorting(object sender, DataGridSortingEventArgs e)
+    {
+        e.Handled = true;
+        var column = e.Column;
+        var key = column.SortMemberPath;
+        if (string.IsNullOrEmpty(key)) return;
+
+        if (key == "Username")
+        {
+            bool desc = _lbSortKey == "Username" ? !_lbSortDescending : false;
+            _lbSortKey = "Username";
+            _lbSortDescending = desc;
+            foreach (var c in LeaderboardGrid.Columns) c.SortDirection = null;
+            column.SortDirection = desc ? ListSortDirection.Descending : ListSortDirection.Ascending;
+            ((ListCollectionView)CollectionViewSource.GetDefaultView(LeaderboardRows)).CustomSort = new PlayerComparer("Username", desc);
+            return;
+        }
+
+        string targetMetric = key switch
+        {
+            "名次" => _lbSortKey is not "Username" ? _lbSortKey : "Rating",
+            "OverallRating" or "Rating" => "Rating",
+            "WinRate" => "WinRate",
+            "MVPs" => "MVPs",
+            "Fkdr" => "Fkdr",
+            "BedsBroken" => "BedsBroken",
+            "FinalKills" => "FinalKills",
+            "Kills" => "Kills",
+            "Matches" => "Matches",
+            "KD" => "KD",
+            "Adr" => "Adr",
+            "HsRate" => "HsRate",
+            _ => "Rating"
+        };
+
+        bool descending = _lbSortKey == targetMetric ? !_lbSortDescending : true;
+        await SwitchLeaderboardCategoryAsync(targetMetric, descending).ConfigureAwait(true);
+    }
+
+    void LeaderboardGrid_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton == MouseButton.Left && LeaderboardGrid.SelectedItem is PlayerRow row && row.State == "ok" && e.ClickCount == 1)
+            Copy(row);
+    }
+
+    void LeaderboardGrid_DoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (LeaderboardGrid.SelectedItem is PlayerRow p && p.State == "ok")
+        {
+            LastSearchResult = p;
+            Copy(p);
+        }
     }
 }

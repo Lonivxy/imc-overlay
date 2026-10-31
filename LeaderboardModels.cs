@@ -18,6 +18,17 @@ internal static class RankVisuals
     public static readonly DropShadowEffect SilverGlow = CreateFrozenGlow(Color.FromRgb(255, 255, 255));
     public static readonly DropShadowEffect BronzeGlow = CreateFrozenGlow(Color.FromRgb(245, 158, 11));
 
+    public static string GetRankColorHex(int? rank) => rank switch
+    {
+        1 => "#FACC15",
+        2 => "#E2E8F0",
+        3 => "#D97706",
+        <= 10 => "#F43F5E",
+        <= 50 => "#FB923C",
+        null or <= 0 => "#64748B",
+        _ => "#94A3B8"
+    };
+
     static SolidColorBrush CreateFrozenBrush(Color color)
     {
         var brush = new SolidColorBrush(color);
@@ -134,6 +145,7 @@ public sealed class LeaderboardData
     public List<LeaderboardPlayer> Players { get; }
 
     readonly double[] _winRates;
+    readonly long[] _wins;
     readonly long[] _mvps;
     readonly double[] _fkdrs;
     readonly long[] _beds;
@@ -152,6 +164,7 @@ public sealed class LeaderboardData
         Players = players ?? [];
 
         _winRates = Players.Select(p => p.WinRate).OrderByDescending(x => x).ToArray();
+        _wins = Players.Select(p => p.Wins).OrderByDescending(x => x).ToArray();
         _mvps = Players.Select(p => p.Mvps).OrderByDescending(x => x).ToArray();
         _fkdrs = Players.Select(p => p.Metrics.Fkdr).OrderByDescending(x => x).ToArray();
         _beds = Players.Select(p => p.Metrics.BedsBroken).OrderByDescending(x => x).ToArray();
@@ -174,6 +187,7 @@ public sealed class LeaderboardData
     }
 
     public int? GetRankWinRate(double val) => val <= 0 ? null : CalculateRank(_winRates, val);
+    public int? GetRankWins(long val) => val <= 0 ? null : CalculateRank(_wins, val);
     public int? GetRankMVPs(long val) => val <= 0 ? null : CalculateRank(_mvps, val);
     public int? GetRankFkdr(double val) => val <= 0 ? null : CalculateRank(_fkdrs, val);
     public int? GetRankBeds(long val) => val <= 0 ? null : CalculateRank(_beds, val);

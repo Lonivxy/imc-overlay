@@ -22,12 +22,45 @@ internal static class Program
         if (args.Length == 1 && args[0] == "--live") { CheckLiveAsync().GetAwaiter().GetResult(); return; }
         CheckRating();
         CheckLeaderboard();
+        CheckCardRenderer();
         CheckLogs();
         CheckConfig();
         CheckApiAsync().GetAwaiter().GetResult();
         CheckStaleRosterRequest(false);
         CheckStaleRosterRequest(true);
         Console.WriteLine("All overlay checks passed.");
+    }
+
+    static void CheckCardRenderer()
+    {
+        var dummyBg = BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null, new byte[4], 4);
+        var player = new PlayerRow
+        {
+            Username = "TestPlayer",
+            State = "ok",
+            GameMode = "bedwars",
+            Matches = 150,
+            Wins = 100,
+            WinRate = 0.667,
+            Fkdr = 4.5,
+            AvgBeds = 1.2,
+            BedsBroken = 180,
+            FinalKills = 450,
+            Kills = 800,
+            MVPs = 35
+        };
+        player.RatingRank = new StatRankInfo(1);
+        player.WinRateRank = new StatRankInfo(2);
+        player.WinsRank = new StatRankInfo(3);
+        player.FkdrRank = new StatRankInfo(5);
+        player.MVPRank = new StatRankInfo(8);
+        player.BedsRank = new StatRankInfo(15);
+        player.FinalsRank = new StatRankInfo(25);
+        player.KillsRank = new StatRankInfo(88);
+        player.MatchesRank = StatRankInfo.None;
+
+        var bitmap = StatsCardRenderer.Render(player, dummyBg, DateTime.Now);
+        Check(bitmap != null && bitmap.PixelWidth == 1200 && bitmap.PixelHeight == 720, "card must render to 1200x720 bitmap");
     }
 
     static async Task CheckLiveAsync()
@@ -119,6 +152,29 @@ internal static class Program
         var loadingRow = new PlayerRow { State = "loading", Username = "TestLoading" };
         loadingRow.ApplyLeaderboard(lb);
         Check(loadingRow.MatchesRank.Tag == "", "Loading row must not display rank tag");
+
+        // 4. Pinned self player & sorting checks
+        var pSelf = new PlayerRow { Username = "Self", State = "ok", IsPinnedSelf = true, Matches = 5, WinRate = 0.2, Fkdr = 1.0 };
+        pSelf.ApplyLeaderboard(lb);
+        var pOther = new PlayerRow { Username = "Other", State = "ok", IsPinnedSelf = false, Matches = 100, WinRate = 0.99, Fkdr = 50.0 };
+        pOther.ApplyLeaderboard(lb);
+        var comparer = new PlayerComparer("Rating", true);
+        Check(comparer.Compare(pSelf, pOther) < 0, "IsPinnedSelf row must always sort before non-pinned players");
+        Check(comparer.Compare(pOther, pSelf) > 0, "Non-pinned player must sort after IsPinnedSelf row");
+
+        // 5. LeaderboardDisplayRank & metric sorting
+        pSelf.LeaderboardDisplayRank = pSelf.FkdrRank;
+        pOther.LeaderboardDisplayRank = pOther.FkdrRank;
+        Check(pOther.LeaderboardDisplayRank.Tag == "#2", "pOther with 50 FKDR must have #2 rank tag");
+        Check(pSelf.LeaderboardDisplayRank.Tag == "#-", "pSelf with 1 FKDR must have #- rank tag");
+
+        var rankComparer = new PlayerComparer("名次", false);
+        Check(rankComparer.Compare(pSelf, pOther) < 0, "Pinned self must still be first when sorted by 名次");
+
+        // CopyFrom should preserve Avatar and LeaderboardDisplayRank
+        var pCopy = new PlayerRow();
+        pCopy.CopyFrom(pOther);
+        Check(pCopy.LeaderboardDisplayRank.Tag == "#2", "CopyFrom must preserve LeaderboardDisplayRank");
     }
 
     static void CheckRating()
@@ -198,10 +254,12 @@ internal static class Program
         Directory.CreateDirectory(dir); var path = Path.Combine(dir, "config.json");
         try
         {
-            File.WriteAllText(path, "{\"unrelatedSetting\":42}");
-            var config = new ConfigService(path); config.Save(new AppSettings(false, .7, "counterember"));
+            File.WriteAllText(path, "{\"unrelatedSetting\":42,\"playerName\":\"Alice\"}");
+            var config = new ConfigService(path);
+            Check(config.Load().PlayerName == "Alice", "playerName must load from config");
+            config.Save(new AppSettings(false, .7, "counterember", "Bob"));
             var text = File.ReadAllText(path);
-            Check(text.Contains("unrelatedSetting") && config.Load() == new AppSettings(false, .7, "counterember"), "config did not round-trip or preserve unknown fields");
+            Check(text.Contains("unrelatedSetting") && config.Load() == new AppSettings(false, .7, "counterember", "Bob"), "config did not round-trip or preserve unknown fields");
         }
         finally { File.Delete(path); Directory.Delete(dir); }
     }
@@ -223,6 +281,15 @@ internal static class Program
         calls = 0;
         var bad = new StatsApiClient(new HttpClient(new FakeHandler((_, _) => { calls++; return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest)); })));
         Check((await bad.FetchAsync("Alice", "bedwars", CancellationToken.None)).State == "error" && calls == 1, "permanent HTTP error should not retry");
+
+        // Connectivity test checks
+        var connectGood = new StatsApiClient(new HttpClient(new FakeHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)))));
+        var resGood = await connectGood.CheckConnectivityAsync();
+        Check(resGood.Success && resGood.ElapsedMs >= 0, "healthy connectivity test must succeed");
+
+        var connectBad = new StatsApiClient(new HttpClient(new FakeHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError)))));
+        var resBad = await connectBad.CheckConnectivityAsync();
+        Check(!resBad.Success, "500 response must fail connectivity test");
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var blocked = new StatsApiClient(new HttpClient(new FakeHandler(async (_, ct) => { entered.SetResult(); await Task.Delay(Timeout.Infinite, ct); return Ok(1); })));
         using var stop = new CancellationTokenSource(); var request = blocked.FetchAsync("Alice", "bedwars", stop.Token); await entered.Task; stop.Cancel();
