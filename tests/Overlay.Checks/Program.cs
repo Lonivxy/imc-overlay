@@ -69,9 +69,16 @@ internal static class Program
         var b = new PlayerRow { State = "ok", Matches = 20, WinRate = .5, Fkdr = 1, AvgBeds = .5, BedsBroken = 1000 };
         Check(a.OverallRating == b.OverallRating, "total beds must not inflate rating");
         Check(new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.77 }.OverallRating == 1.77, "CE rating must stay official");
-        Check(!new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.0 }.IsHighRating, "rating 1.00 must not be highlighted");
-        Check(new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.01 }.IsHighRating, "rating above 1.00 must be highlighted");
-        Check(!new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.004 }.IsHighRating, "a rating displayed as 1.00 must not be highlighted");
+        var ordinary = new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.11 };
+        var warning = new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.12 };
+        var high = new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.35 };
+        var rounded = new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.346 };
+        var roundedDown = new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.344 };
+        Check(!ordinary.IsHighRating && !ordinary.IsWarningRating && ordinary.ThreatLabel == "普通", "1.11 must be ordinary");
+        Check(!warning.IsHighRating && warning.IsWarningRating && warning.ThreatLabel == "危险", "1.12 must be warning");
+        Check(high.IsHighRating && !high.IsWarningRating && high.ThreatLabel == "极危", "1.35 must be high");
+        Check(rounded.RatingLabel == "1.35" && rounded.IsHighRating && rounded.ThreatLabel == "极危", "highlight and label must follow displayed rounding");
+        Check(roundedDown.RatingLabel == "1.34" && roundedDown.IsWarningRating, "1.34 must remain warning");
         Check(!new PlayerRow { State = "loading", GameMode = "counterember", Rating = 3 }.IsHighRating, "loading players must not be highlighted");
         Check(!a.IsHighRating && b.OverallRating == 1.0, "neutral BW rating must not be highlighted");
     }

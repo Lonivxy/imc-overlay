@@ -46,8 +46,10 @@ public sealed class PlayerRow : INotifyPropertyChanged
     public string State { get => _state; set { _state = value; Changed(); Changed(nameof(MatchesLabel)); } }
     public string Error { get => _error; set { _error = value; Changed(); Changed(nameof(MatchesLabel)); } }
     public double? OverallRating => State != "ok" ? null : GameMode == "counterember" ? Rating : BedwarsRatingCalculator.Calculate(Matches, WinRate, Fkdr, AvgBeds);
-    public bool IsHighRating => OverallRating is double rating && Math.Round(rating, 2, MidpointRounding.ToEven) > 1.0;
-    public string ThreatLabel => OverallRating is not double value ? "—" : value >= 1.35 ? "极危" : value >= 1.12 ? "危险" : "普通";
+    double? DisplayedRating => OverallRating is double rating && double.IsFinite(rating) ? Math.Round(rating, 2, MidpointRounding.ToEven) : null;
+    public bool IsHighRating => DisplayedRating >= 1.35;
+    public bool IsWarningRating => DisplayedRating >= 1.12 && DisplayedRating < 1.35;
+    public string ThreatLabel => DisplayedRating is null ? "—" : IsHighRating ? "极危" : IsWarningRating ? "危险" : "普通";
     public string WinRateLabel => State == "ok" ? WinRate.ToString("P1") : "—"; public string FkdrLabel => State == "ok" ? Fkdr.ToString("F2") : "—";
     public string WinRateColor => State != "ok" ? "#64748B" : WinRate >= .60 ? "#34D399" : WinRate >= .40 ? "#38BDF8" : "#A8B6C9";
     public string FkdrColor => State != "ok" ? "#64748B" : Fkdr >= 4 ? "#FB7185" : Fkdr >= 2.5 ? "#FB923C" : Fkdr >= 1.5 ? "#FBBF24" : Fkdr >= .8 ? "#34D399" : "#A8B6C9";
@@ -58,7 +60,7 @@ public sealed class PlayerRow : INotifyPropertyChanged
     public string MVPsLabel => State == "ok" ? (MVPs > 0 ? $"★ {MVPs}" : "0") : "—"; public string BedsLabel => State == "ok" ? BedsBroken.ToString() : "—"; public string FinalsLabel => State == "ok" ? FinalKills.ToString() : "—"; public string KillsLabel => State == "ok" ? Kills.ToString() : "—";
     public string MatchesLabel => State == "ok" ? $"{Matches} 场" : State == "loading" ? "查询中…" : State == "unregistered" ? "无记录" : "查询失败";
     public void CopyFrom(PlayerRow x) { Username=x.Username; GameMode=x.GameMode; Matches=x.Matches; Wins=x.Wins; MVPs=x.MVPs; BedsBroken=x.BedsBroken; FinalKills=x.FinalKills; Kills=x.Kills; WinRate=x.WinRate; Fkdr=x.Fkdr; AvgBeds=x.AvgBeds; KD=x.KD; Rating=x.Rating; Adr=x.Adr; HsRate=x.HsRate; Error=x.Error; State=x.State; Changed(string.Empty); }
-    void Changed(string? name = null) { if (name == null) return; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name)); foreach (var p in new[] { nameof(OverallRating), nameof(IsHighRating), nameof(RatingLabel), nameof(RatingInfo), nameof(ThreatLabel), nameof(WinRateLabel), nameof(FkdrLabel), nameof(MatchesLabel), nameof(MVPsLabel), nameof(BedsLabel), nameof(FinalsLabel), nameof(KillsLabel) }) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(p)); }
+    void Changed(string? name = null) { if (name == null) return; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name)); foreach (var p in new[] { nameof(OverallRating), nameof(IsHighRating), nameof(IsWarningRating), nameof(RatingLabel), nameof(RatingInfo), nameof(ThreatLabel), nameof(WinRateLabel), nameof(FkdrLabel), nameof(MatchesLabel), nameof(MVPsLabel), nameof(BedsLabel), nameof(FinalsLabel), nameof(KillsLabel) }) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(p)); }
 }
 
 public sealed class ApiResponse { public ApiSummary? Summary { get; set; } }
