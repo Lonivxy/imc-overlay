@@ -77,10 +77,10 @@ dotnet run --project .\tests\Overlay.Checks\Overlay.Checks.csproj -c Release
 将版本标签推送到 GitHub 后，Actions 会自动构建独立的 Windows x64 程序、打包并创建 Release。例如：
 
 ```powershell
-git tag v1.0.1
-git push origin v1.0.1
+git tag v2.0-radar
+git push origin v2.0-radar
 ```
 
-包含连字符的版本标签（例如 `v1.1-probe`）会发布为预发行版本。普通分支推送不会自动创建 Release。
+测试与探测标签（例如 `v1.3-probe`）会发布为预发行版本，正式版本标签（例如 `v2.0-radar`、`v2.0.0`）会发布为正式发行版（Release）。普通分支推送不会自动创建 Release。
 
 也可在 GitHub Actions 中手动运行工作流验证构建；手动运行只上传供下载的 Actions 构建产物，不创建 Release。

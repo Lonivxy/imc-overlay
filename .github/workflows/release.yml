@@ -64,6 +64,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $options = @('--repo', $env:GITHUB_REPOSITORY, '--verify-tag', '--title', "IMC.RE Overlay $env:GITHUB_REF_NAME", '--generate-notes')
-          if ($env:GITHUB_REF_NAME.Contains('-')) { $options += '--prerelease' }
+          if ($env:GITHUB_REF_NAME -match '-(probe|alpha|beta|rc|dev)') { $options += '--prerelease' }
           gh release create $env:GITHUB_REF_NAME $env:RELEASE_ASSET $env:RELEASE_CHECKSUM @options
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
