@@ -52,6 +52,14 @@ internal static class Program
             Rating = 1.03
         };
         player.RatingRank = new StatRankInfo(86);
+        player.WinRateRank = new StatRankInfo(91);
+        player.WinsRank = new StatRankInfo(38);
+        player.FkdrRank = new StatRankInfo(71);
+        player.MVPRank = new StatRankInfo(26);
+        player.BedsRank = new StatRankInfo(66);
+        player.FinalsRank = new StatRankInfo(26);
+        player.KillsRank = new StatRankInfo(13);
+        player.MatchesRank = new StatRankInfo(42);
 
         // Fetch avatar for Pk1m_
         try

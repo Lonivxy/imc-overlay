@@ -74,7 +74,7 @@ internal static class StatsCardRenderer
             dc.DrawText(ratingFormatted, new Point(ratingX, headerY + 46));
             double ratingNumWidth = ratingFormatted.Width;
 
-            // Rating rank tag right next to Rating number (NO BOX FRAME!)
+            // Rating rank tag right next to Rating number (NO BOX FRAME)
             var ratingRank = player.RatingRank;
             string ratingRankTag = string.IsNullOrEmpty(ratingRank.Tag) ? "#-" : ratingRank.Tag;
             string ratingRankColor = RankVisuals.GetRankColorHex(ratingRank.Rank);
@@ -95,27 +95,27 @@ internal static class StatsCardRenderer
 
             // ================= 8 STAT CARDS (2 ROWS x 4 COLS) =================
             var stats = player.GameMode == "counterember"
-                ? new (string Label, string Value, string Color)[]
+                ? new (string Label, string Value, string Color, StatRankInfo Rank)[]
                 {
-                    ("胜率", player.WinRate.ToString("P1"), "#34D399"),
-                    ("胜场", player.Wins.ToString(), "#F1F5F9"),
-                    ("K/D", player.KD.ToString("F2"), "#FB7185"),
-                    ("MVP", player.MVPs.ToString(), "#FBBF24"),
-                    ("ADR", player.Adr.ToString("F1"), "#38BDF8"),
-                    ("爆头率", player.HsRate.ToString("P1"), "#FB923C"),
-                    ("击杀", player.Kills.ToString(), "#F1F5F9"),
-                    ("比赛场次", player.Matches.ToString(), "#F1F5F9")
+                    ("胜率", player.WinRate.ToString("P1"), "#34D399", player.WinRateRank),
+                    ("胜场", player.Wins.ToString(), "#F1F5F9", player.WinsRank),
+                    ("K/D", player.KD.ToString("F2"), "#FB7185", player.KDRank),
+                    ("MVP", player.MVPs.ToString(), "#FBBF24", player.MVPRank),
+                    ("ADR", player.Adr.ToString("F1"), "#38BDF8", player.AdrRank),
+                    ("爆头率", player.HsRate.ToString("P1"), "#FB923C", player.HsRateRank),
+                    ("击杀", player.Kills.ToString(), "#F1F5F9", player.KillsRank),
+                    ("比赛场次", player.Matches.ToString(), "#F1F5F9", player.MatchesRank)
                 }
-                : new (string Label, string Value, string Color)[]
+                : new (string Label, string Value, string Color, StatRankInfo Rank)[]
                 {
-                    ("胜率", player.WinRate.ToString("P1"), "#34D399"),
-                    ("胜场", player.Wins.ToString(), "#F1F5F9"),
-                    ("FKDR", player.Fkdr.ToString("F2"), "#FB7185"),
-                    ("MVP", player.MVPs.ToString(), "#FBBF24"),
-                    ("拆床", player.BedsBroken.ToString(), "#38BDF8"),
-                    ("终杀", player.FinalKills.ToString(), "#FB923C"),
-                    ("击杀", player.Kills.ToString(), "#F1F5F9"),
-                    ("比赛场次", player.Matches.ToString(), "#F1F5F9")
+                    ("胜率", player.WinRate.ToString("P1"), "#34D399", player.WinRateRank),
+                    ("胜场", player.Wins.ToString(), "#F1F5F9", player.WinsRank),
+                    ("FKDR", player.Fkdr.ToString("F2"), "#FB7185", player.FkdrRank),
+                    ("MVP", player.MVPs.ToString(), "#FBBF24", player.MVPRank),
+                    ("拆床", player.BedsBroken.ToString(), "#38BDF8", player.BedsRank),
+                    ("终杀", player.FinalKills.ToString(), "#FB923C", player.FinalsRank),
+                    ("击杀", player.Kills.ToString(), "#F1F5F9", player.KillsRank),
+                    ("比赛场次", player.Matches.ToString(), "#F1F5F9", player.MatchesRank)
                 };
 
             const double cardW = 272; // (1136 - 16 * 3) / 4 = 1088 / 4 = 272 exactly!
@@ -134,12 +134,18 @@ internal static class StatsCardRenderer
                 dc.DrawRoundedRectangle(Brush("#D2142233"), new Pen(Brush("#5058728A"), 1), new Rect(x, y, cardW, cardH), 14, 14);
 
                 // Label
-                Text(dc, stats[i].Label, x + 24, y + 26, 20, "#94A3B8", true, cardW - 48);
+                Text(dc, stats[i].Label, x + 24, y + 20, 19, "#94A3B8", true, cardW - 48);
 
-                // Value (large, bold, centered)
-                var valFormatted = new FormattedText(stats[i].Value, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Bold, 46, Brush(stats[i].Color), 1.0)
+                // Value (large, bold)
+                var valFormatted = new FormattedText(stats[i].Value, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Bold, 42, Brush(stats[i].Color), 1.0)
                 { MaxTextWidth = cardW - 48, MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis };
-                dc.DrawText(valFormatted, new Point(x + 24, y + 80));
+                dc.DrawText(valFormatted, new Point(x + 24, y + 56));
+
+                // Individual metric rank info (NO BOX FRAME - clean colored text directly under value)
+                var rank = stats[i].Rank;
+                string rankTag = string.IsNullOrEmpty(rank.Tag) ? "#-" : rank.Tag;
+                string rankColor = RankVisuals.GetRankColorHex(rank.Rank);
+                Text(dc, "全服 " + rankTag, x + 24, y + 120, 16, rankColor, true, cardW - 48);
             }
 
             // ================= FOOTER CONTAINER =================
@@ -149,7 +155,7 @@ internal static class StatsCardRenderer
 
             Text(dc, date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), marginX + 28, footerY + 34, 21, "#E2E8F0", true);
 
-            var footerSubFormatted = new FormattedText("IMC.RE  ·  玩家战绩快照  ·  全服天梯数据同步", CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Regular, 17, Brush("#94A3B8"), 1.0);
+            var footerSubFormatted = new FormattedText("IMC.RE  ·  玩家战绩快照", CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Regular, 17, Brush("#94A3B8"), 1.0);
             dc.DrawText(footerSubFormatted, new Point(marginX + contentW - footerSubFormatted.Width - 28, footerY + 36));
         }
 
