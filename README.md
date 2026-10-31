@@ -21,23 +21,25 @@
 
 ### 起床战争估算 Rating
 
-起床战争 Rating 是本项目的启发式估算，**不是 IMC.RE 或 CS2 的官方评分**，也不能与 CounterEmber 的官方 Rating 直接比较。它以 1.00 为中性基准，结合 FKDR、胜率和场均拆床，再根据场次降低低样本的影响。计算方式大致如下：
+起床战争 Rating 是本项目的启发式估算，**不是 IMC.RE 的官方评分**。它以 1.00 为中性基准，结合 FKDR、胜率和场均拆床，再根据场次降低低样本的影响。计算方式大致如下：
 
-令 $n$ 为对局数、$w$ 为胜率（如 60% 记为 $0.6$）、$f$ 为 FKDR、$b$ 为场均拆床数。用 $\operatorname{clip}(x,a,b)$ 表示将 $x$ 限制在 $[a,b]$ 范围内：
+令 `n` 为对局数、`w` 为胜率（如 60% 记为 0.6）、`f` 为 FKDR、`b` 为场均拆床数。用 `C(x, a, b)` 表示将 `x` 限制在 `a` 到 `b` 之间：
 
 $$
 \begin{aligned}
-W &= \operatorname{clip}\!\left(2(w-0.5),\,-1,\,1\right), \\
-F &= \operatorname{clip}\!\left(\log_2\!\left(\frac{\max(0,f)+1}{2}\right),\,-1,\,2\right), \\
-B &= \operatorname{clip}\!\left(\frac{b-0.5}{0.5},\,-1,\,2\right).
+W &= C(2(w-0.5), -1, 1), \\
+F &= C\left(\log_2\left(\frac{\max(0,f)+1}{2}\right), -1, 2\right), \\
+B &= C\left(\frac{b-0.5}{0.5}, -1, 2\right).
 \end{aligned}
 $$
 
 $$
-\operatorname{Rating} = \operatorname{clip}\!\left(
-1 + \frac{n}{n+20}\left(0.45F + 0.35W + 0.20B\right),\;0.25,\;2.50
+R = C\left(
+1 + \frac{n}{n+20}\left(0.45F + 0.35W + 0.20B\right), 0.25, 2.50
 \right).
 $$
+
+其中 `R` 就是最终显示的 Rating。
 
 少于 10 场时数字后显示 `*`，提示样本不足；无对局时不显示评分。威胁标签使用估算值分级：1.35 及以上为「极危」、1.12 至 1.35 以下为「危险」，其他为「普通」。累计拆床数不直接提高评分。
 

@@ -1,6 +1,6 @@
 namespace IMCBedwarsOverlay;
 
-// A bounded heuristic, not an official IMC or CS2 rating. One is the neutral baseline.
+// A bounded heuristic, not an official IMC.RE rating. One is the neutral baseline.
 internal static class BedwarsRatingCalculator
 {
     public static double? Calculate(long matches, double winRate, double fkdr, double avgBeds)
