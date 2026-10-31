@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.IO;
@@ -61,6 +61,13 @@ public partial class MainWindow : Window
     readonly Dictionary<string, PlayerRow> ByName = new(StringComparer.OrdinalIgnoreCase);
     readonly DispatcherTimer KeyTimer = new() { Interval = TimeSpan.FromMilliseconds(35) };
     HwndSource? Source; PlayerRow? LastSearchResult; bool _hidden, _forceImc = true, _hotkeyRegistered, _wasHotkey, _wasTab, _wasSpace;
+    int _hotkeyVk = VK_BACKSLASH;
+    uint _hotkeyModifiers = 0;
+    string _hotkeyName = "\\";
+    bool _recordingHotkey, _initialized;
+    bool _threatAlert = true;
+    readonly HashSet<string> _alertedThreatPlayers = new(StringComparer.OrdinalIgnoreCase);
+    readonly List<string> _recentSearches = new();
     DateTime _spaceAt; const double AspectRatio = 980d / 552d;
 
     public MainWindow() : this(new StatsApiClient(), true) { }
@@ -82,26 +89,87 @@ public partial class MainWindow : Window
         if (_interactiveServices) { KeyTimer.Tick += PollKeys; KeyTimer.Start(); }
         if (startLogWatcher) _logWatcher.Start();
         if (_interactiveServices) { _ = CheckStartupConnectivityAsync(); _ = RefreshLeaderboardAsync(_mode); }
-        Players.CollectionChanged += (_, _) => UpdateSummary();
+        Players.CollectionChanged += (_, _) => UpdateSummary(); _initialized = true;
     }
 
     void LoadConfig()
     {
-        var settings = _config.Load(); _forceImc = settings.ForceImc; _mode = settings.GameMode; _myPlayerName = settings.PlayerName; OpacitySlider.Value = settings.Opacity;
+        var settings = _config.Load();
+        _forceImc = settings.ForceImc;
+        _mode = settings.GameMode;
+        _myPlayerName = settings.PlayerName;
+        _hotkeyVk = settings.ToggleKey;
+        _hotkeyModifiers = settings.ToggleModifiers;
+        _hotkeyName = string.IsNullOrEmpty(settings.ToggleKeyName) ? "\\" : settings.ToggleKeyName;
+        _threatAlert = settings.ThreatAlert;
+
+        OpacitySlider.Value = settings.Opacity;
         MyPlayerNameBox.Text = _myPlayerName;
         ForceImcBox.IsChecked = _forceImc;
+        if (ThreatAlertBox != null) ThreatAlertBox.IsChecked = _threatAlert;
         ModeCombo.SelectedIndex = _mode == "counterember" ? 1 : 0;
         Opacity = OpacitySlider.Value;
+        if (HotkeyBox != null) HotkeyBox.Text = _hotkeyName;
+        if (HotkeyHintText != null) HotkeyHintText.Text = $"按 {_hotkeyName} 键显示或隐藏悬浮窗。";
     }
     void SaveConfig()
     {
-        _config.Save(new AppSettings(_forceImc, OpacitySlider.Value, _mode, _myPlayerName));
+        if (!_initialized || OpacitySlider == null) return;
+        double? left = WindowState == WindowState.Normal ? Left : null;
+        double? top = WindowState == WindowState.Normal ? Top : null;
+        double? width = WindowState == WindowState.Normal ? Width : null;
+        double? height = WindowState == WindowState.Normal ? Height : null;
+        _config.Save(new AppSettings(
+            _forceImc,
+            OpacitySlider.Value,
+            _mode,
+            _myPlayerName,
+            _hotkeyVk,
+            _hotkeyModifiers,
+            _hotkeyName,
+            left,
+            top,
+            width,
+            height,
+            _threatAlert
+        ));
     }
     void Window_SourceInitialized(object? sender, EventArgs e)
     {
         if (!_interactiveServices) return;
-        var hwnd = new WindowInteropHelper(this).Handle; Source = HwndSource.FromHwnd(hwnd); Source.AddHook(WndProc);
-        _hotkeyRegistered = RegisterHotKey(hwnd, 1, 0, VK_BACKSLASH); SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);
+        var hwnd = new WindowInteropHelper(this).Handle;
+        Source = HwndSource.FromHwnd(hwnd);
+        Source.AddHook(WndProc);
+
+        ApplyHotkey(_hotkeyVk, _hotkeyModifiers, _hotkeyName, false);
+
+        var settings = _config.Load();
+        if (settings.WindowLeft.HasValue && settings.WindowTop.HasValue &&
+            settings.WindowWidth.HasValue && settings.WindowHeight.HasValue)
+        {
+            double left = settings.WindowLeft.Value;
+            double top = settings.WindowTop.Value;
+            double width = settings.WindowWidth.Value;
+            double height = settings.WindowHeight.Value;
+
+            double screenW = SystemParameters.VirtualScreenWidth;
+            double screenH = SystemParameters.VirtualScreenHeight;
+            double screenLeft = SystemParameters.VirtualScreenLeft;
+            double screenTop = SystemParameters.VirtualScreenTop;
+
+            if (width >= 400 && height >= 250 &&
+                left >= screenLeft - width + 100 && left <= screenLeft + screenW - 100 &&
+                top >= screenTop && top <= screenTop + screenH - 100)
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual;
+                Left = left;
+                Top = top;
+                Width = width;
+                Height = height;
+            }
+        }
+
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);
     }
     IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wp, IntPtr lp, ref bool handled)
     {
@@ -127,6 +195,9 @@ public partial class MainWindow : Window
         var width = (int)Math.Round(_resizeWidth * dpi.DpiScaleX);
         var height = (int)Math.Round(_resizeWidth / AspectRatio * dpi.DpiScaleY);
         SetWindowPos(new WindowInteropHelper(this).Handle, IntPtr.Zero, 0, 0, width, height, 0x0002 | 0x0004 | 0x0010);
+        Width = _resizeWidth;
+        Height = _resizeWidth / AspectRatio;
+        SaveConfig();
     }
     void PlayersGrid_Sorting(object sender, DataGridSortingEventArgs e)
     {
@@ -152,7 +223,7 @@ public partial class MainWindow : Window
     void PollKeys(object? sender, EventArgs e)
     {
         bool space = GetAsyncKeyState(VK_SPACE) < 0, tab = GetAsyncKeyState(VK_TAB) < 0;
-        if (!_hotkeyRegistered) { bool hotkey = GetAsyncKeyState(VK_BACKSLASH) < 0; if (hotkey && !_wasHotkey) ToggleVisibility(); _wasHotkey = hotkey; }
+        if (!_hotkeyRegistered) { bool hotkey = GetAsyncKeyState(_hotkeyVk) < 0; if (hotkey && !_wasHotkey) ToggleVisibility(); _wasHotkey = hotkey; }
         if (space && !_wasSpace) _spaceAt = DateTime.UtcNow;
         if (tab && !_wasTab && DateTime.UtcNow - _spaceAt < TimeSpan.FromSeconds(4)) { _logWatcher.ArmScan(); FooterStatus.Text = "检测到扫描操作，正在读取大厅玩家…"; }
         _wasSpace = space; _wasTab = tab;
@@ -170,7 +241,7 @@ public partial class MainWindow : Window
     void SetRoster(IEnumerable<string> names)
     {
         _rosterRequests.Cancel(); _rosterRequests.Dispose(); _rosterRequests = new();
-        Players.Clear(); ByName.Clear(); foreach (var n in names) AddPlayer(n);
+        Players.Clear(); ByName.Clear(); _alertedThreatPlayers.Clear(); foreach (var n in names) AddPlayer(n);
     }
     void AddPlayer(string name)
     {
@@ -298,6 +369,10 @@ public partial class MainWindow : Window
                     if (curAvatar != null) target.Avatar = curAvatar;
                     else if (AvatarCache.TryGetValue(name, out var cached)) target.Avatar = cached;
                 }
+                if (_threatAlert && target.IsHighRating && _alertedThreatPlayers.Add(name))
+                {
+                    try { System.Media.SystemSounds.Asterisk.Play(); } catch { }
+                }
                 CollectionViewSource.GetDefaultView(Players).Refresh();
             }
         }
@@ -315,6 +390,10 @@ public partial class MainWindow : Window
         try { result = await _statsApi.FetchAsync(name, mode, token); }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         if (token.IsCancellationRequested || version != _searchVersion || mode != _mode || _closing) return; result?.ApplyLeaderboard(_currentLeaderboard); LastSearchResult = result;
+        _recentSearches.RemoveAll(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
+        _recentSearches.Insert(0, name);
+        if (_recentSearches.Count > 6) _recentSearches.RemoveAt(_recentSearches.Count - 1);
+        UpdateRecentSearchChips();
         if (result?.State == "ok") { ModalMessage.Text = FormatStats(result); CopyButton.Visibility = Visibility.Visible; CardButton.Visibility = Visibility.Visible; }
         else ModalMessage.Text = result?.State == "unregistered" ? "未找到该玩家在当前模式的记录。" : $"查询失败：{result?.Error ?? "请检查网络后重试。"}";
     }
@@ -338,7 +417,7 @@ public partial class MainWindow : Window
         animation.Completed += (_, _) => { if (ReferenceEquals(panel.Tag, marker)) { panel.Visibility = Visibility.Collapsed; panel.BeginAnimation(OpacityProperty, null); panel.Opacity = 1; } };
         panel.BeginAnimation(OpacityProperty, animation);
     }
-    void Search_Click(object sender, RoutedEventArgs e) { _searchRequests.Cancel(); _searchVersion++; LastSearchResult = null; ModalTitle.Text = "查询玩家战绩"; SearchBox.Text = ""; ModalMessage.Text = "输入玩家名，最多自动重试 3 次。"; CopyButton.Visibility = Visibility.Collapsed; CardButton.Visibility = Visibility.Collapsed; ShowPanel(ModalShade); SearchBox.Focus(); }
+    void Search_Click(object sender, RoutedEventArgs e) { _searchRequests.Cancel(); _searchVersion++; LastSearchResult = null; ModalTitle.Text = "查询玩家战绩"; SearchBox.Text = ""; ModalMessage.Text = "输入玩家名，最多自动重试 3 次。"; CopyButton.Visibility = Visibility.Collapsed; CardButton.Visibility = Visibility.Collapsed; UpdateRecentSearchChips(); ShowPanel(ModalShade); SearchBox.Focus(); }
     void OnActiveLogDetected(string path)
     {
         if (Dispatcher.HasShutdownStarted) return;
@@ -413,7 +492,7 @@ public partial class MainWindow : Window
         }
         catch { }
     }
-    void Header_Drag(object sender, MouseButtonEventArgs e) { if (e.ButtonState == MouseButtonState.Pressed) { try { DragMove(); } catch { } } }
+    void Header_Drag(object sender, MouseButtonEventArgs e) { if (e.ButtonState == MouseButtonState.Pressed) { try { DragMove(); SaveConfig(); } catch { } } }
     void PlayersGrid_Click(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton == MouseButton.Left && PlayersGrid.SelectedItem is PlayerRow row && row.State == "ok" && e.ClickCount == 1) Copy(row);
@@ -1017,4 +1096,189 @@ public partial class MainWindow : Window
             Copy(p);
         }
     }
+
+    void ClearRoster_Click(object sender, RoutedEventArgs e)
+    {
+        _rosterRequests.Cancel();
+        Players.Clear();
+        ByName.Clear();
+        _alertedThreatPlayers.Clear();
+        UpdateSummary();
+        FooterStatus.Text = "已清空玩家列表";
+    }
+
+    void ThreatAlertBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        _threatAlert = ThreatAlertBox.IsChecked == true;
+        SaveConfig();
+    }
+
+    void UpdateRecentSearchChips()
+    {
+        if (RecentSearchesPanel == null || RecentSearchesRow == null) return;
+        RecentSearchesPanel.Children.Clear();
+        if (_recentSearches.Count == 0)
+        {
+            RecentSearchesRow.Visibility = Visibility.Collapsed;
+            return;
+        }
+        RecentSearchesRow.Visibility = Visibility.Visible;
+        foreach (var sName in _recentSearches)
+        {
+            var btn = new Button
+            {
+                Content = sName,
+                Padding = new Thickness(8, 2, 8, 2),
+                Margin = new Thickness(0, 0, 6, 4),
+                FontSize = 11,
+                Background = new SolidColorBrush(Color.FromRgb(0x1F, 0x2A, 0x3B)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x3B, 0x4D, 0x66)),
+                Foreground = new SolidColorBrush(Color.FromRgb(0x94, 0xA3, 0xB8)),
+                Cursor = Cursors.Hand
+            };
+            btn.Click += async (_, _) =>
+            {
+                SearchBox.Text = sName;
+                await Search();
+            };
+            RecentSearchesPanel.Children.Add(btn);
+        }
+    }
+
+    void ApplyHotkey(int vk, uint mods, string name, bool saveConfig)
+    {
+        if (_interactiveServices)
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd != IntPtr.Zero)
+            {
+                if (_hotkeyRegistered)
+                {
+                    UnregisterHotKey(hwnd, 1);
+                    _hotkeyRegistered = false;
+                }
+                bool ok = RegisterHotKey(hwnd, 1, mods | 0x4000, (uint)vk);
+                if (!ok)
+                    ok = RegisterHotKey(hwnd, 1, mods, (uint)vk);
+                _hotkeyRegistered = ok;
+            }
+        }
+        _hotkeyVk = vk;
+        _hotkeyModifiers = mods;
+        _hotkeyName = name;
+        if (HotkeyBox != null) HotkeyBox.Text = name;
+        if (HotkeyHintText != null) HotkeyHintText.Text = $"按 {name} 键显示或隐藏悬浮窗。";
+        if (HotkeyStatus != null)
+        {
+            if (_hotkeyRegistered)
+            {
+                HotkeyStatus.Text = $"快捷键已生效：[{name}]";
+                HotkeyStatus.Foreground = (Brush)FindResource("Green");
+            }
+            else
+            {
+                HotkeyStatus.Text = $"快捷键 [{name}] 已设置 (注册全局热键失败，可能被占用)";
+                HotkeyStatus.Foreground = (Brush)FindResource("Amber");
+            }
+        }
+        if (saveConfig) SaveConfig();
+    }
+
+    void RecordHotkey_Click(object sender, RoutedEventArgs e) => StartRecordingHotkey();
+    void HotkeyBox_MouseDown(object sender, MouseButtonEventArgs e) => StartRecordingHotkey();
+
+    void StartRecordingHotkey()
+    {
+        _recordingHotkey = true;
+        HotkeyBox.Focus();
+        HotkeyBox.Text = "请按下快捷键... (按 Esc 取消)";
+        HotkeyStatus.Text = "正在监听键盘输入... 支持 F1~F12, 反斜杠, 字母等, 可配合 Ctrl/Alt/Shift";
+        HotkeyStatus.Foreground = (Brush)FindResource("Amber");
+    }
+
+    void HotkeyBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (_recordingHotkey)
+        {
+            _recordingHotkey = false;
+            HotkeyBox.Text = _hotkeyName;
+            HotkeyStatus.Text = $"当前快捷键：[{_hotkeyName}]";
+            HotkeyStatus.Foreground = (Brush)FindResource("Dim");
+        }
+    }
+
+    void ResetHotkey_Click(object sender, RoutedEventArgs e)
+    {
+        _recordingHotkey = false;
+        ApplyHotkey(VK_BACKSLASH, 0, "\\", true);
+    }
+
+    void HotkeyBox_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!_recordingHotkey)
+        {
+            StartRecordingHotkey();
+            e.Handled = true;
+            return;
+        }
+
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (key == Key.Escape)
+        {
+            _recordingHotkey = false;
+            HotkeyBox.Text = _hotkeyName;
+            HotkeyStatus.Text = "已取消快捷键修改";
+            HotkeyStatus.Foreground = (Brush)FindResource("Dim");
+            e.Handled = true;
+            return;
+        }
+
+        if (key is Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        uint mods = 0;
+        var parts = new List<string>();
+        if (Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl)) { mods |= 0x0002; parts.Add("Ctrl"); }
+        if (Keyboard.IsKeyDown(Key.LeftAlt) || Keyboard.IsKeyDown(Key.RightAlt)) { mods |= 0x0001; parts.Add("Alt"); }
+        if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift)) { mods |= 0x0004; parts.Add("Shift"); }
+
+        int vk = KeyInterop.VirtualKeyFromKey(key);
+        string keyName = GetKeyFriendlyName(key, vk);
+        string fullName = parts.Count > 0 ? $"{string.Join(" + ", parts)} + {keyName}" : keyName;
+
+        ApplyHotkey(vk, mods, fullName, true);
+        _recordingHotkey = false;
+        e.Handled = true;
+    }
+
+    static string GetKeyFriendlyName(Key key, int vk)
+    {
+        return key switch
+        {
+            Key.Oem5 => "\\",
+            Key.Oem3 => "`",
+            Key.Oem1 => ";",
+            Key.OemPlus => "+",
+            Key.OemComma => ",",
+            Key.OemMinus => "-",
+            Key.OemPeriod => ".",
+            Key.Oem2 => "/",
+            Key.Oem4 => "[",
+            Key.Oem6 => "]",
+            Key.Oem7 => "'",
+            Key.Back => "Backspace",
+            Key.Return => "Enter",
+            Key.Space => "Space",
+            _ when key >= Key.F1 && key <= Key.F24 => key.ToString(),
+            _ when key >= Key.A && key <= Key.Z => key.ToString(),
+            _ when key >= Key.D0 && key <= Key.D9 => key.ToString().TrimStart('D'),
+            _ when key >= Key.NumPad0 && key <= Key.NumPad9 => "Num" + key.ToString().Substring(6),
+            _ => key.ToString()
+        };
+    }
+
 }

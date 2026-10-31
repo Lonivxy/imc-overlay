@@ -343,6 +343,10 @@ internal static class Program
             config.Save(new AppSettings(false, .7, "counterember", "Bob"));
             var text = File.ReadAllText(path);
             Check(text.Contains("unrelatedSetting") && config.Load() == new AppSettings(false, .7, "counterember", "Bob"), "config did not round-trip or preserve unknown fields");
+
+            var custom = new AppSettings(true, 0.85, "bedwars", "CustomPro", 0x77, 2, "Ctrl + F8", 120.0, 240.0, 1024.0, 600.0, false);
+            config.Save(custom);
+            Check(config.Load() == custom, "custom hotkey and window bounds config did not round-trip");
         }
         finally { File.Delete(path); Directory.Delete(dir); }
     }
