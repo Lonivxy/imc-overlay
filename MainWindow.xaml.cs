@@ -52,6 +52,7 @@ public partial class MainWindow : Window
     static readonly ConcurrentDictionary<string, ImageSource> AvatarCache = new(StringComparer.OrdinalIgnoreCase);
     static readonly SemaphoreSlim AvatarSlots = new(4, 4);
     static readonly Regex UserRegex = new(@"^[A-Za-z0-9_]{3,16}$", RegexOptions.Compiled);
+    LeaderboardData _currentLeaderboard = LeaderboardData.Empty;
     readonly ObservableCollection<PlayerRow> Players = [];
     readonly Dictionary<string, PlayerRow> ByName = new(StringComparer.OrdinalIgnoreCase);
     readonly DispatcherTimer KeyTimer = new() { Interval = TimeSpan.FromMilliseconds(35) };
@@ -69,9 +70,11 @@ public partial class MainWindow : Window
         if (!Http.DefaultRequestHeaders.UserAgent.Any()) Http.DefaultRequestHeaders.UserAgent.ParseAdd("IMC-BedWars-Overlay/2.0");
         LoadConfig();
         _logWatcher = new MinecraftLogWatcher(OnLogEvent, _forceImc);
+        _logWatcher.ActiveLogDetected += OnActiveLogDetected;
         ApplyMode(_mode, false);
         if (_interactiveServices) { KeyTimer.Tick += PollKeys; KeyTimer.Start(); }
         if (startLogWatcher) _logWatcher.Start();
+        if (_interactiveServices) _ = RefreshLeaderboardAsync(_mode);
         Players.CollectionChanged += (_, _) => UpdateSummary();
     }
 
@@ -187,7 +190,7 @@ public partial class MainWindow : Window
         {
             var result = await _statsApi.FetchAsync(name, mode, token);
             if (!token.IsCancellationRequested && !_closing && _mode == mode && ByName.TryGetValue(name, out var current) && ReferenceEquals(current, target))
-            { target.CopyFrom(result); CollectionViewSource.GetDefaultView(Players).Refresh(); }
+            { result.ApplyLeaderboard(_currentLeaderboard); target.CopyFrom(result); CollectionViewSource.GetDefaultView(Players).Refresh(); }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
     }
@@ -202,7 +205,7 @@ public partial class MainWindow : Window
         PlayerRow result;
         try { result = await _statsApi.FetchAsync(name, mode, token); }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
-        if (token.IsCancellationRequested || version != _searchVersion || mode != _mode || _closing) return; LastSearchResult = result;
+        if (token.IsCancellationRequested || version != _searchVersion || mode != _mode || _closing) return; result?.ApplyLeaderboard(_currentLeaderboard); LastSearchResult = result;
         if (result?.State == "ok") { ModalMessage.Text = FormatStats(result); CopyButton.Visibility = Visibility.Visible; CardButton.Visibility = Visibility.Visible; }
         else ModalMessage.Text = result?.State == "unregistered" ? "未找到该玩家在当前模式的记录。" : $"查询失败：{result?.Error ?? "请检查网络后重试。"}";
     }
@@ -227,7 +230,28 @@ public partial class MainWindow : Window
         panel.BeginAnimation(OpacityProperty, animation);
     }
     void Search_Click(object sender, RoutedEventArgs e) { _searchRequests.Cancel(); _searchVersion++; LastSearchResult = null; ModalTitle.Text = "查询玩家战绩"; SearchBox.Text = ""; ModalMessage.Text = "输入玩家名，最多自动重试 3 次。"; CopyButton.Visibility = Visibility.Collapsed; CardButton.Visibility = Visibility.Collapsed; ShowPanel(ModalShade); SearchBox.Focus(); }
-    void Settings_Click(object sender, RoutedEventArgs e) { ShowPanel(SettingsShade); }
+    void OnActiveLogDetected(string path)
+    {
+        if (Dispatcher.HasShutdownStarted) return;
+        _ = Dispatcher.BeginInvoke(() =>
+        {
+            if (_closing) return;
+            LogPathBox.Text = path;
+            FooterStatus.ToolTip = $"当前客户端日志: {path}";
+            if (FooterStatus.Text is "就绪" or "" || FooterStatus.Text.StartsWith("就绪 · 客户端日志"))
+            {
+                var fileName = System.IO.Path.GetFileName(path);
+                var parent = System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(path));
+                FooterStatus.Text = $"就绪 · 客户端日志: {parent}\\{fileName}";
+            }
+        });
+    }
+    void Settings_Click(object sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrEmpty(_logWatcher.ActiveLogPath))
+            LogPathBox.Text = _logWatcher.ActiveLogPath;
+        ShowPanel(SettingsShade);
+    }
     void OpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) { Opacity = e.NewValue; }
     void Close_Click(object sender, RoutedEventArgs e) => Close();
     void ModalClose_Click(object sender, RoutedEventArgs e) { _searchRequests.Cancel(); _searchVersion++; HidePanel(ModalShade); }
@@ -248,6 +272,26 @@ public partial class MainWindow : Window
         foreach (var col in PlayersGrid.Columns) col.SortDirection = col.SortMemberPath == _sortKey ? ListSortDirection.Descending : null;
         ((ListCollectionView)CollectionViewSource.GetDefaultView(Players)).CustomSort = new PlayerComparer(_sortKey, true);
         if (changed && refresh) { var names = Players.Select(p => p.Username).ToArray(); SetRoster(names); FooterStatus.Text = "已切换模式，正在重新查询名单…"; LastSearchResult = null; }
+        if (_interactiveServices) _ = RefreshLeaderboardAsync(mode);
+    }
+    async Task RefreshLeaderboardAsync(string mode)
+    {
+        try
+        {
+            var lb = await _statsApi.GetLeaderboardAsync(mode).ConfigureAwait(false);
+            if (mode == _mode)
+            {
+                _currentLeaderboard = lb;
+                _ = Dispatcher.BeginInvoke(() =>
+                {
+                    if (_closing) return;
+                    foreach (var p in Players) p.ApplyLeaderboard(_currentLeaderboard);
+                    LastSearchResult?.ApplyLeaderboard(_currentLeaderboard);
+                    CollectionViewSource.GetDefaultView(Players).Refresh();
+                });
+            }
+        }
+        catch { }
     }
     void Header_Drag(object sender, MouseButtonEventArgs e) { if (e.ButtonState == MouseButtonState.Pressed) { try { DragMove(); } catch { } } }
     void PlayersGrid_Click(object sender, MouseButtonEventArgs e)

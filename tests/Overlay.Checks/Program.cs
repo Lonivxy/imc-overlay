@@ -21,6 +21,7 @@ internal static class Program
         if (args.Length == 2 && args[0] == "--screenshot") { CaptureScreenshot(args[1]); return; }
         if (args.Length == 1 && args[0] == "--live") { CheckLiveAsync().GetAwaiter().GetResult(); return; }
         CheckRating();
+        CheckLeaderboard();
         CheckLogs();
         CheckConfig();
         CheckApiAsync().GetAwaiter().GetResult();
@@ -46,9 +47,17 @@ internal static class Program
         var flags = BindingFlags.Instance | BindingFlags.NonPublic;
         typeof(MainWindow).GetMethod("ApplyMode", flags)!.Invoke(window, ["bedwars", false]);
         var rows = (System.Collections.ObjectModel.ObservableCollection<PlayerRow>)typeof(MainWindow).GetField("Players", flags)!.GetValue(window)!;
-        rows.Add(new PlayerRow { Username = "Example_Alex", State = "ok", GameMode = "bedwars", Matches = 120, Wins = 80, WinRate = .667, Fkdr = 3.2, AvgBeds = 1.3, BedsBroken = 156, FinalKills = 410, Kills = 625, MVPs = 30 });
-        rows.Add(new PlayerRow { Username = "Example_Steve", State = "ok", GameMode = "bedwars", Matches = 75, Wins = 39, WinRate = .52, Fkdr = 1.8, AvgBeds = .8, BedsBroken = 60, FinalKills = 165, Kills = 240, MVPs = 12 });
-        rows.Add(new PlayerRow { Username = "Example_Player", State = "ok", GameMode = "bedwars", Matches = 36, Wins = 15, WinRate = .417, Fkdr = .9, AvgBeds = .4, BedsBroken = 14, FinalKills = 43, Kills = 90, MVPs = 4 });
+        var alex = new PlayerRow { Username = "Example_Alex", State = "ok", GameMode = "bedwars", Matches = 120, Wins = 80, WinRate = .667, Fkdr = 3.2, AvgBeds = 1.3, BedsBroken = 156, FinalKills = 410, Kills = 625, MVPs = 30 };
+        alex.FkdrRank = new StatRankInfo(1); alex.WinRateRank = new StatRankInfo(2); alex.MVPRank = new StatRankInfo(3); alex.FinalsRank = new StatRankInfo(8); alex.BedsRank = new StatRankInfo(25); alex.KillsRank = new StatRankInfo(88); alex.MatchesRank = new StatRankInfo(12);
+        rows.Add(alex);
+
+        var steve = new PlayerRow { Username = "Example_Steve", State = "ok", GameMode = "bedwars", Matches = 75, Wins = 39, WinRate = .52, Fkdr = 1.8, AvgBeds = .8, BedsBroken = 60, FinalKills = 165, Kills = 240, MVPs = 12 };
+        steve.FkdrRank = new StatRankInfo(15); steve.WinRateRank = new StatRankInfo(35); steve.MVPRank = new StatRankInfo(9); steve.FinalsRank = new StatRankInfo(42); steve.BedsRank = new StatRankInfo(65); steve.KillsRank = new StatRankInfo(70); steve.MatchesRank = new StatRankInfo(55);
+        rows.Add(steve);
+
+        var player = new PlayerRow { Username = "Example_Player", State = "ok", GameMode = "bedwars", Matches = 36, Wins = 15, WinRate = .417, Fkdr = .9, AvgBeds = .4, BedsBroken = 14, FinalKills = 43, Kills = 90, MVPs = 4 };
+        player.FkdrRank = StatRankInfo.None; player.WinRateRank = StatRankInfo.None; player.MVPRank = StatRankInfo.None; player.FinalsRank = StatRankInfo.None; player.BedsRank = StatRankInfo.None; player.KillsRank = StatRankInfo.None; player.MatchesRank = StatRankInfo.None;
+        rows.Add(player);
         window.Show(); window.UpdateLayout(); PumpFor(200);
         var bitmap = new RenderTargetBitmap(980, 552, 96, 96, PixelFormats.Pbgra32); bitmap.Render(window);
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
@@ -56,6 +65,60 @@ internal static class Program
         using (var file = File.Create(output)) encoder.Save(file);
         window.Close();
         Console.WriteLine("Saved screenshot with sample data.");
+    }
+
+    static void CheckLeaderboard()
+    {
+        // 1. StatRankInfo visual checks
+        var r1 = new StatRankInfo(1);
+        Check(r1.Tag == "#1" && r1.Effect != null && r1.Brush.Color == RankVisuals.GoldBrush.Color, "Rank 1 must be gold glowing");
+
+        var r2 = new StatRankInfo(2);
+        Check(r2.Tag == "#2" && r2.Effect != null && r2.Brush.Color == RankVisuals.SilverBrush.Color, "Rank 2 must be silver glowing");
+
+        var r3 = new StatRankInfo(3);
+        Check(r3.Tag == "#3" && r3.Effect != null && r3.Brush.Color == RankVisuals.BronzeBrush.Color, "Rank 3 must be bronze glowing");
+
+        var r5 = new StatRankInfo(5);
+        Check(r5.Tag == "#5" && r5.Effect == null && r5.Brush.Color == RankVisuals.Top10Brush.Color, "Rank 5 must be red");
+
+        var r25 = new StatRankInfo(25);
+        Check(r25.Tag == "#25" && r25.Effect == null && r25.Brush.Color == RankVisuals.Top50Brush.Color, "Rank 25 must be orange");
+
+        var r88 = new StatRankInfo(88);
+        Check(r88.Tag == "#88" && r88.Effect == null && r88.Brush.Color == RankVisuals.OtherBrush.Color, "Rank 88 must be gray");
+
+        var rNone = new StatRankInfo(null);
+        Check(rNone.Tag == "#-" && rNone.Effect == null && rNone.Brush.Color == RankVisuals.NoneBrush.Color, "Null rank must be #-");
+
+        var rEmpty = StatRankInfo.Empty;
+        Check(rEmpty.Tag == "", "Empty rank must have empty tag for non-ok states");
+
+        // 2. LeaderboardData calculation checks
+        var p1 = new LeaderboardPlayer { Name = "P1", Matches = 11, Wins = 9, Mvps = 9, WinRate = 0.818, Metrics = new ApiMetrics { Fkdr = 53, FinalKills = 53, BedsBroken = 25, Kills = 180, Kd = 20 } };
+        var p2 = new LeaderboardPlayer { Name = "P2", Matches = 16, Wins = 15, Mvps = 5, WinRate = 0.938, Metrics = new ApiMetrics { Fkdr = 18, FinalKills = 18, BedsBroken = 7, Kills = 44, Kd = 2.1 } };
+        var p3 = new LeaderboardPlayer { Name = "P3", Matches = 14, Wins = 11, Mvps = 11, WinRate = 0.786, Metrics = new ApiMetrics { Fkdr = 17, FinalKills = 34, BedsBroken = 22, Kills = 54, Kd = 2.0 } };
+
+        var lb = new LeaderboardData([p1, p2, p3], "bedwars", DateTime.UtcNow);
+        Check(lb.GetRankFkdr(53) == 1, "P1 FKDR must be #1");
+        Check(lb.GetRankFkdr(18) == 2, "P2 FKDR must be #2");
+        Check(lb.GetRankFkdr(17) == 3, "P3 FKDR must be #3");
+        Check(lb.GetRankWinRate(0.938) == 1, "P2 WinRate must be #1");
+        Check(lb.GetRankWinRate(0.818) == 2, "P1 WinRate must be #2");
+        Check(lb.GetRankMVPs(11) == 1, "P3 MVPs must be #1");
+        Check(lb.GetRankMVPs(0) == null, "0 MVPs must have no rank");
+        Check(lb.GetRankFkdr(0) == null, "0 FKDR must have no rank");
+        Check(lb.GetRankFkdr(5) == null, "FKDR worse than all players must return null (#-)");
+
+        // 3. PlayerRow application checks
+        var row = new PlayerRow { State = "ok", Username = "TestPlayer", Matches = 20, WinRate = 0.85, Fkdr = 20, MVPs = 10, BedsBroken = 15, FinalKills = 30, Kills = 100 };
+        row.ApplyLeaderboard(lb);
+        Check(row.WinRateRank.Tag == "#2" && row.WinRateRank.Brush.Color == RankVisuals.SilverBrush.Color, "Row WinRate rank 2 must be silver");
+        Check(row.FkdrRank.Tag == "#2" && row.FkdrRank.Brush.Color == RankVisuals.SilverBrush.Color, "Row FKDR rank 2 must be silver");
+
+        var loadingRow = new PlayerRow { State = "loading", Username = "TestLoading" };
+        loadingRow.ApplyLeaderboard(lb);
+        Check(loadingRow.MatchesRank.Tag == "", "Loading row must not display rank tag");
     }
 
     static void CheckRating()
@@ -106,6 +169,25 @@ internal static class Program
             using var background = new MinecraftLogWatcher(_ => callbackThread.TrySetResult(Environment.CurrentManagedThreadId), true, () => [path], TimeSpan.FromMilliseconds(20));
             background.ArmScan(); background.Start();
             Check(callbackThread.Task.Wait(TimeSpan.FromSeconds(5)) && callbackThread.Task.Result != uiThread, "log parsing must run off the caller thread");
+
+            // Device path normalization check
+            Check(MinecraftLogWatcher.NormalizeDevicePath(@"\\?\D:\games\minecraft\logs\latest.log") == @"D:\games\minecraft\logs\latest.log", "device path prefix must be normalized");
+            Check(MinecraftLogWatcher.NormalizeDevicePath(@"\\?\UNC\server\share\latest.log") == @"\\server\share\latest.log", "UNC device path must be normalized");
+
+            // Active process log discovery check
+            var activeLogs = MinecraftLogWatcher.FindActiveProcessLogs();
+            foreach (var l in activeLogs)
+            {
+                Check(l.EndsWith("latest.log", StringComparison.OrdinalIgnoreCase), $"discovered log must end with latest.log: {l}");
+                Check(File.Exists(l), $"discovered log file must exist: {l}");
+            }
+
+            // Verify active log path event
+            string? detected = null;
+            using var activeWatcher = new MinecraftLogWatcher(_ => { }, true);
+            activeWatcher.ActiveLogDetected += p => detected = p;
+            activeWatcher.ReadNewLines(path, CancellationToken.None);
+            Check(detected == path, "active log path must be updated on new lines");
         }
         finally { File.Delete(path); }
     }

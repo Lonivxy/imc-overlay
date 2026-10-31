@@ -55,7 +55,7 @@ $$
 dotnet publish .\IMCBedwarsOverlay.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o .\publish
 ```
 
-配置存放在 `%APPDATA%\IMCBedwarsOverlay\config.json`。游戏客户端的日志位置和实际扫描行为取决于客户端版本；如自动扫描未识别，可使用「查询玩家」。
+配置存放在 `%APPDATA%\IMCBedwarsOverlay\config.json`。程序支持通过运行中的 `java.exe`/`javaw.exe` 进程句柄实时定位当前客户端正在写入的 `latest.log`（兼容 Badlion Client / BLC、Lunar、Feather、自定义客户端路径等），并在「设置」中展示当前识别的日志路径。未检测到客户端进程时会自动回退至常见启动器默认路径；如自动扫描未识别，可使用「查询玩家」。
 
 回归检查：
 

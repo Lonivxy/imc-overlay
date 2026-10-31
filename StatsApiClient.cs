@@ -13,6 +13,7 @@ internal sealed class StatsApiClient
     readonly SemaphoreSlim _slots = new(6, 6);
     readonly SemaphoreSlim _startGate = new(1, 1);
     readonly ConcurrentDictionary<string, (PlayerRow Row, DateTime Time)> _cache = new(StringComparer.OrdinalIgnoreCase);
+    readonly ConcurrentDictionary<string, (LeaderboardData Data, DateTime Time)> _lbCache = new(StringComparer.OrdinalIgnoreCase);
     long _lastStartTicks;
     static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
@@ -20,6 +21,35 @@ internal sealed class StatsApiClient
     {
         _http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(12) };
         if (!_http.DefaultRequestHeaders.UserAgent.Any()) _http.DefaultRequestHeaders.UserAgent.ParseAdd("IMC-BedWars-Overlay/2.0");
+    }
+
+    public async Task<LeaderboardData> GetLeaderboardAsync(string mode, CancellationToken token = default)
+    {
+        if (_lbCache.TryGetValue(mode, out var cached) && DateTime.UtcNow - cached.Time < TimeSpan.FromMinutes(10))
+            return cached.Data;
+
+        try
+        {
+            using var response = await _http.GetAsync("https://api.imc.re/stats/" + mode + "/leaderboard", HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+            {
+                await using var stream = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
+                var res = await JsonSerializer.DeserializeAsync<LeaderboardResponse>(stream, JsonOptions, token).ConfigureAwait(false);
+                if (res?.Players != null)
+                {
+                    var data = new LeaderboardData(res.Players, mode, DateTime.UtcNow);
+                    _lbCache[mode] = (data, DateTime.UtcNow);
+                    return data;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch { }
+
+        if (_lbCache.TryGetValue(mode, out var old))
+            return old.Data;
+
+        return LeaderboardData.Empty;
     }
 
     public async Task<PlayerRow> FetchAsync(string name, string mode, CancellationToken token)
@@ -61,6 +91,7 @@ internal sealed class StatsApiClient
                         if (data?.Summary?.Metrics == null) throw new InvalidDataException("服务返回的数据格式不正确");
                         var s = data.Summary; var m = s.Metrics;
                         var row = new PlayerRow { Username = string.IsNullOrWhiteSpace(s.Name) ? name : s.Name, State = "ok", GameMode = mode, Matches = s.Matches, Wins = s.Wins, MVPs = s.Mvps, WinRate = s.WinRate, Fkdr = m.Fkdr, BedsBroken = m.BedsBroken, FinalKills = m.FinalKills, Kills = m.Kills, AvgBeds = m.AvgBeds, KD = m.Kd, Rating = m.Rating, Adr = m.Adr, HsRate = m.HsRate };
+                        if (_lbCache.TryGetValue(mode, out var lbData)) row.ApplyLeaderboard(lbData.Data);
                         token.ThrowIfCancellationRequested();
                         _cache[cacheKey] = (row, DateTime.UtcNow);
                         return row;
@@ -89,7 +120,6 @@ internal sealed class StatsApiClient
 
     static async Task WaitForRetryAsync(TimeSpan delay, CancellationToken token)
     {
-        // Task.Delay has an upper limit; keep long Retry-After values cancellable without retrying early.
         while (delay > TimeSpan.Zero)
         {
             var part = delay > TimeSpan.FromDays(1) ? TimeSpan.FromDays(1) : delay;
