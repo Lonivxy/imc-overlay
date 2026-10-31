@@ -21,6 +21,12 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      - name: Run regression checks
+        shell: pwsh
+        run: |
+          dotnet run --project ./tests/Overlay.Checks/Overlay.Checks.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Publish Windows x64 application
         shell: pwsh
         run: |
@@ -33,15 +39,21 @@ jobs:
           $archive = if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { 'IMC-Overlay-test-win-x64.zip' } else { "IMC-Overlay-$env:GITHUB_REF_NAME-win-x64.zip" }
           $executable = Join-Path $env:RUNNER_TEMP 'publish/IMCBedwarsOverlay-CSharp.exe'
           if (-not (Test-Path -LiteralPath $executable)) { throw 'Published executable is missing.' }
-          Compress-Archive -LiteralPath $executable -DestinationPath $archive -CompressionLevel Optimal
+          Compress-Archive -LiteralPath @($executable, 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'docs') -DestinationPath $archive -CompressionLevel Optimal
+          $checksum = "$archive.sha256"
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content -LiteralPath $checksum -Encoding ascii
           "RELEASE_ASSET=$archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_CHECKSUM=$checksum" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload manual build artifact
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: IMC-Overlay-test-win-x64
-          path: ${{ env.RELEASE_ASSET }}
+          path: |
+            ${{ env.RELEASE_ASSET }}
+            ${{ env.RELEASE_CHECKSUM }}
           if-no-files-found: error
           retention-days: 7
 
@@ -53,5 +65,5 @@ jobs:
         run: |
           $options = @('--repo', $env:GITHUB_REPOSITORY, '--verify-tag', '--title', "IMC.RE Overlay $env:GITHUB_REF_NAME", '--generate-notes')
           if ($env:GITHUB_REF_NAME.Contains('-')) { $options += '--prerelease' }
-          gh release create $env:GITHUB_REF_NAME $env:RELEASE_ASSET @options
+          gh release create $env:GITHUB_REF_NAME $env:RELEASE_ASSET $env:RELEASE_CHECKSUM @options
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
