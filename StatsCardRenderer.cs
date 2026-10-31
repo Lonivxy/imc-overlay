@@ -25,120 +25,137 @@ internal static class StatsCardRenderer
         var visual = new DrawingVisual();
         using (var dc = visual.RenderOpen())
         {
+            // Background
             var bg = new ImageBrush(background) { Stretch = Stretch.UniformToFill, AlignmentX = AlignmentX.Center, AlignmentY = AlignmentY.Center };
             dc.DrawRectangle(bg, null, new Rect(0, 0, Width, Height));
-            dc.DrawRectangle(Brush("#950B1220"), null, new Rect(0, 0, Width, Height));
+            dc.DrawRectangle(Brush("#A508101C"), null, new Rect(0, 0, Width, Height));
 
-            // Header Container
-            dc.DrawRoundedRectangle(Brush("#C8172537"), new Pen(Brush("#80536C82"), 1), new Rect(32, 28, 1136, 145), 18, 18);
+            const double marginX = 32;
+            const double contentW = 1136; // 1200 - 32 * 2
+            const double gap = 16;
 
-            // Avatar Container
-            dc.DrawRoundedRectangle(Brush("#E51A2D41"), new Pen(Brush("#907F9AB0"), 1), new Rect(54, 47, 106, 106), 12, 12);
-            if (player.Avatar != null) dc.DrawImage(player.Avatar, new Rect(62, 55, 90, 90));
-            else Text(dc, "?", 91, 60, 50, "#BACBD9", true);
+            // ================= HEADER CONTAINER =================
+            const double headerY = 44;
+            const double headerH = 142;
+            dc.DrawRoundedRectangle(Brush("#D2142132"), new Pen(Brush("#505F7D96"), 1), new Rect(marginX, headerY, contentW, headerH), 16, 16);
+
+            // Avatar Container (centered vertically inside header: (142 - 106)/2 = 18px offset)
+            const double avatarBoxY = headerY + 18;
+            dc.DrawRoundedRectangle(Brush("#E519283A"), new Pen(Brush("#806D8CA5"), 1.2), new Rect(marginX + 20, avatarBoxY, 106, 106), 14, 14);
+            if (player.Avatar != null)
+            {
+                dc.DrawImage(player.Avatar, new Rect(marginX + 28, avatarBoxY + 8, 90, 90));
+            }
+            else
+            {
+                Text(dc, "?", marginX + 57, avatarBoxY + 22, 52, "#BACBD9", true);
+            }
 
             // Mode Label
-            Text(dc, "IMC.RE  /  " + (player.GameMode == "counterember" ? "COUNTEREMBER" : "BEDWARS"), 184, 46, 17, "#70D9C1", true);
+            string modeName = player.GameMode == "counterember" ? "COUNTEREMBER" : "BEDWARS";
+            Text(dc, "IMC.RE  /  " + modeName, 180, headerY + 18, 16, "#5EEAD4", true);
 
             // Username
             var nameFormatted = new FormattedText(player.Username, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Bold, 36, Brush("#FFFFFF"), 1.0)
             { MaxTextWidth = 420, MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis };
-            dc.DrawText(nameFormatted, new Point(182, 74));
+            dc.DrawText(nameFormatted, new Point(180, headerY + 44));
             double nameWidth = nameFormatted.Width;
 
-            // Rating next to username, large, with dynamic color
-            double ratingX = 184 + nameWidth + 24;
+            // Rating next to username
             double? ratingVal = player.OverallRating;
             string ratingStr = ratingVal.HasValue ? ratingVal.Value.ToString("F2") : "—";
-            string ratingColor = player.IsHighRating ? "#FF8790" : player.IsWarningRating ? "#FFD277" : "#71D0FF";
+            string ratingColor = player.IsHighRating ? "#FB7185" : player.IsWarningRating ? "#FBBF24" : "#38BDF8";
 
-            Text(dc, "RATING", ratingX, 66, 12, "#94A3B8", true);
+            double ratingX = 180 + nameWidth + 24;
+            Text(dc, "RATING", ratingX, headerY + 36, 11, "#94A3B8", true);
 
-            var ratingFormatted = new FormattedText(ratingStr, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Bold, 46, Brush(ratingColor), 1.0)
+            var ratingFormatted = new FormattedText(ratingStr, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Bold, 42, Brush(ratingColor), 1.0)
             { MaxLineCount = 1 };
-            dc.DrawText(ratingFormatted, new Point(ratingX, 80));
+            dc.DrawText(ratingFormatted, new Point(ratingX, headerY + 46));
             double ratingNumWidth = ratingFormatted.Width;
 
-            // Rating rank tag at bottom-right of Rating number
+            // Rating rank tag right next to Rating number (NO BOX FRAME!)
             var ratingRank = player.RatingRank;
             string ratingRankTag = string.IsNullOrEmpty(ratingRank.Tag) ? "#-" : ratingRank.Tag;
             string ratingRankColor = RankVisuals.GetRankColorHex(ratingRank.Rank);
 
-            double rankBadgeX = ratingX + ratingNumWidth + 8;
-            double rankBadgeY = 104;
+            double rankTextX = ratingX + ratingNumWidth + 8;
+            double rankTextY = headerY + 68;
+            Text(dc, ratingRankTag, rankTextX, rankTextY, 20, ratingRankColor, true);
 
-            if (ratingRank.Rank is >= 1 and <= 3)
-            {
-                dc.DrawRoundedRectangle(Brush("#28" + ratingRankColor.TrimStart('#')), new Pen(Brush(ratingRankColor), 1.5), new Rect(rankBadgeX - 4, rankBadgeY - 2, 60, 24), 5, 5);
-            }
-            else if (ratingRank.Rank is <= 50)
-            {
-                dc.DrawRoundedRectangle(Brush("#20" + ratingRankColor.TrimStart('#')), new Pen(Brush("#50" + ratingRankColor.TrimStart('#')), 1), new Rect(rankBadgeX - 4, rankBadgeY - 2, 60, 24), 5, 5);
-            }
-            Text(dc, ratingRankTag, rankBadgeX, rankBadgeY, 17, ratingRankColor, true);
-
-            // Subtitle
+            // Subtitle under username / rating
             string subNote = player.GameMode == "bedwars"
-                ? ("估算 Rating · 全服天梯 " + ratingRankTag + (player.Matches < 10 ? "  ·  场次较少" : ""))
-                : ("官方天梯 Rating · 全服排名 " + ratingRankTag);
-            Text(dc, subNote, 184, 134, 13.5, "#94A3B8", false, 550);
+                ? ("估算 Rating  ·  全服天梯 " + ratingRankTag + (player.Matches < 10 ? "  ·  场次较少" : ""))
+                : ("官方天梯 Rating  ·  全服排名 " + ratingRankTag);
+            Text(dc, subNote, 180, headerY + 104, 14, "#94A3B8", false, 580);
 
-            Text(dc, "PLAYER STATS", 920, 88, 20, "#B7C9D6", true, 220);
+            // Right header label: PLAYER STATS (vertically centered)
+            var statsHeaderFormatted = new FormattedText("PLAYER STATS", CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Bold, 20, Brush("#94A3B8"), 1.0);
+            dc.DrawText(statsHeaderFormatted, new Point(marginX + contentW - statsHeaderFormatted.Width - 36, headerY + (headerH - statsHeaderFormatted.Height) / 2));
 
-            // 8 Stat Boxes with Rank info underneath
+            // ================= 8 STAT CARDS (2 ROWS x 4 COLS) =================
             var stats = player.GameMode == "counterember"
-                ? new (string Label, string Value, string Color, StatRankInfo Rank)[]
+                ? new (string Label, string Value, string Color)[]
                 {
-                    ("胜率", player.WinRate.ToString("P1"), "#62E0AE", player.WinRateRank),
-                    ("胜场", player.Wins.ToString(), "#E7F2FA", player.WinsRank),
-                    ("K/D", player.KD.ToString("F2"), "#FF8C9C", player.KDRank),
-                    ("MVP", player.MVPs.ToString(), "#FFD277", player.MVPRank),
-                    ("ADR", player.Adr.ToString("F1"), "#71D0FF", player.AdrRank),
-                    ("爆头率", player.HsRate.ToString("P1"), "#FFB97B", player.HsRateRank),
-                    ("击杀", player.Kills.ToString(), "#E7F2FA", player.KillsRank),
-                    ("比赛场次", player.Matches.ToString(), "#E7F2FA", player.MatchesRank)
+                    ("胜率", player.WinRate.ToString("P1"), "#34D399"),
+                    ("胜场", player.Wins.ToString(), "#F1F5F9"),
+                    ("K/D", player.KD.ToString("F2"), "#FB7185"),
+                    ("MVP", player.MVPs.ToString(), "#FBBF24"),
+                    ("ADR", player.Adr.ToString("F1"), "#38BDF8"),
+                    ("爆头率", player.HsRate.ToString("P1"), "#FB923C"),
+                    ("击杀", player.Kills.ToString(), "#F1F5F9"),
+                    ("比赛场次", player.Matches.ToString(), "#F1F5F9")
                 }
-                : new (string Label, string Value, string Color, StatRankInfo Rank)[]
+                : new (string Label, string Value, string Color)[]
                 {
-                    ("胜率", player.WinRate.ToString("P1"), "#62E0AE", player.WinRateRank),
-                    ("胜场", player.Wins.ToString(), "#E7F2FA", player.WinsRank),
-                    ("FKDR", player.Fkdr.ToString("F2"), "#FF8C9C", player.FkdrRank),
-                    ("MVP", player.MVPs.ToString(), "#FFD277", player.MVPRank),
-                    ("拆床", player.BedsBroken.ToString(), "#71D0FF", player.BedsRank),
-                    ("终杀", player.FinalKills.ToString(), "#FFB97B", player.FinalsRank),
-                    ("击杀", player.Kills.ToString(), "#E7F2FA", player.KillsRank),
-                    ("比赛场次", player.Matches.ToString(), "#E7F2FA", player.MatchesRank)
+                    ("胜率", player.WinRate.ToString("P1"), "#34D399"),
+                    ("胜场", player.Wins.ToString(), "#F1F5F9"),
+                    ("FKDR", player.Fkdr.ToString("F2"), "#FB7185"),
+                    ("MVP", player.MVPs.ToString(), "#FBBF24"),
+                    ("拆床", player.BedsBroken.ToString(), "#38BDF8"),
+                    ("终杀", player.FinalKills.ToString(), "#FB923C"),
+                    ("击杀", player.Kills.ToString(), "#F1F5F9"),
+                    ("比赛场次", player.Matches.ToString(), "#F1F5F9")
                 };
+
+            const double cardW = 272; // (1136 - 16 * 3) / 4 = 1088 / 4 = 272 exactly!
+            const double cardH = 170;
+            const double row1Y = headerY + headerH + gap; // 44 + 142 + 16 = 202
+            const double row2Y = row1Y + cardH + gap;     // 202 + 170 + 16 = 388
 
             for (int i = 0; i < stats.Length; i++)
             {
-                double x = 32 + (i % 4) * 287, y = 191 + (i / 4) * 185;
-                dc.DrawRoundedRectangle(Brush("#D0142233"), new Pen(Brush("#70536C82"), 1), new Rect(x, y, 275, 171), 14, 14);
+                int col = i % 4;
+                int row = i / 4;
+                double x = marginX + col * (cardW + gap);
+                double y = row == 0 ? row1Y : row2Y;
+
+                // Card background and border
+                dc.DrawRoundedRectangle(Brush("#D2142233"), new Pen(Brush("#5058728A"), 1), new Rect(x, y, cardW, cardH), 14, 14);
 
                 // Label
-                Text(dc, stats[i].Label, x + 22, y + 18, 19, "#A8BFCE", true, 230);
+                Text(dc, stats[i].Label, x + 24, y + 26, 20, "#94A3B8", true, cardW - 48);
 
-                // Value
-                Text(dc, stats[i].Value, x + 20, y + 55, 38, stats[i].Color, true, 232);
-
-                // Leaderboard rank info under the value
-                var rank = stats[i].Rank;
-                string rankTag = string.IsNullOrEmpty(rank.Tag) ? "#-" : rank.Tag;
-                string rankColor = RankVisuals.GetRankColorHex(rank.Rank);
-
-                double pillW = 122, pillH = 32;
-                double pillX = x + 20, pillY = y + 116;
-                dc.DrawRoundedRectangle(Brush("#A50C1623"), new Pen(Brush(rank.Rank is >= 1 and <= 3 ? rankColor : "#354A62"), 1), new Rect(pillX, pillY, pillW, pillH), 7, 7);
-                Text(dc, "全服 " + rankTag, pillX + 12, pillY + 5, 15, rankColor, true, pillW - 20);
+                // Value (large, bold, centered)
+                var valFormatted = new FormattedText(stats[i].Value, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Bold, 46, Brush(stats[i].Color), 1.0)
+                { MaxTextWidth = cardW - 48, MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis };
+                dc.DrawText(valFormatted, new Point(x + 24, y + 80));
             }
 
-            // Footer
-            dc.DrawRoundedRectangle(Brush("#D0122030"), null, new Rect(32, 572, 1136, 100), 14, 14);
-            Text(dc, date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), 55, 603, 21, "#CBD9E2", true);
-            Text(dc, "IMC.RE  ·  玩家战绩快照  ·  全服天梯数据同步", 770, 603, 18, "#AFC4D0", false, 370);
+            // ================= FOOTER CONTAINER =================
+            const double footerY = row2Y + cardH + gap; // 388 + 170 + 16 = 574
+            const double footerH = 92;
+            dc.DrawRoundedRectangle(Brush("#CC122030"), new Pen(Brush("#404F6980"), 1), new Rect(marginX, footerY, contentW, footerH), 14, 14);
+
+            Text(dc, date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), marginX + 28, footerY + 34, 21, "#E2E8F0", true);
+
+            var footerSubFormatted = new FormattedText("IMC.RE  ·  玩家战绩快照  ·  全服天梯数据同步", CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Regular, 17, Brush("#94A3B8"), 1.0);
+            dc.DrawText(footerSubFormatted, new Point(marginX + contentW - footerSubFormatted.Width - 28, footerY + 36));
         }
 
         var bitmap = new RenderTargetBitmap(Width, Height, 96, 96, PixelFormats.Pbgra32);
-        bitmap.Render(visual); bitmap.Freeze(); return bitmap;
+        bitmap.Render(visual);
+        bitmap.Freeze();
+        return bitmap;
     }
 }

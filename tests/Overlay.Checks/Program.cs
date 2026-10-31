@@ -1,3 +1,4 @@
+using System.Windows;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
@@ -19,6 +20,7 @@ internal static class Program
     static void Main(string[] args)
     {
         if (args.Length == 2 && args[0] == "--screenshot") { CaptureScreenshot(args[1]); return; }
+        if (args.Length == 2 && args[0] == "--card") { RenderCardSample(args[1]); return; }
         if (args.Length == 1 && args[0] == "--live") { CheckLiveAsync().GetAwaiter().GetResult(); return; }
         CheckRating();
         CheckLeaderboard();
@@ -29,6 +31,79 @@ internal static class Program
         CheckStaleRosterRequest(false);
         CheckStaleRosterRequest(true);
         Console.WriteLine("All overlay checks passed.");
+    }
+
+    static void RenderCardSample(string outputPath)
+    {
+        var player = new PlayerRow
+        {
+            Username = "Pk1m_",
+            State = "ok",
+            GameMode = "bedwars",
+            Matches = 49,
+            Wins = 20,
+            WinRate = 0.408,
+            Fkdr = 1.62,
+            AvgBeds = 0.33,
+            BedsBroken = 16,
+            FinalKills = 47,
+            Kills = 201,
+            MVPs = 12,
+            Rating = 1.03
+        };
+        player.RatingRank = new StatRankInfo(86);
+
+        // Fetch avatar for Pk1m_
+        try
+        {
+            var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            var bytes = http.GetByteArrayAsync("https://crafthead.net/avatar/Pk1m_/32").GetAwaiter().GetResult();
+            using var ms = new MemoryStream(bytes);
+            var av = new BitmapImage();
+            av.BeginInit();
+            av.CacheOption = BitmapCacheOption.OnLoad;
+            av.StreamSource = ms;
+            av.EndInit();
+            av.Freeze();
+            player.Avatar = av;
+        }
+        catch { }
+
+        // Load wallpaper or fallback gradient
+        BitmapSource bg;
+        var cachePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "IMCBedwarsOverlay", "wallpaper_ocean_monument.png");
+        if (File.Exists(cachePath))
+        {
+            using var fs = File.OpenRead(cachePath);
+            var img = new BitmapImage();
+            img.BeginInit();
+            img.CacheOption = BitmapCacheOption.OnLoad;
+            img.StreamSource = fs;
+            img.EndInit();
+            img.Freeze();
+            bg = img;
+        }
+        else
+        {
+            var visual = new DrawingVisual();
+            using (var dc = visual.RenderOpen())
+            {
+                var grad = new LinearGradientBrush((Color)ColorConverter.ConvertFromString("#0C1A2E"), (Color)ColorConverter.ConvertFromString("#050A14"), new Point(0, 0), new Point(1, 1));
+                dc.DrawRectangle(grad, null, new Rect(0, 0, 1920, 1080));
+            }
+            var fallback = new RenderTargetBitmap(1920, 1080, 96, 96, PixelFormats.Pbgra32);
+            fallback.Render(visual);
+            fallback.Freeze();
+            bg = fallback;
+        }
+
+        var bitmap = StatsCardRenderer.Render(player, bg, DateTime.Now);
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
+        using var stream = File.Create(outputPath);
+        encoder.Save(stream);
+        Console.WriteLine("Saved stats card sample to: " + outputPath);
     }
 
     static void CheckCardRenderer()

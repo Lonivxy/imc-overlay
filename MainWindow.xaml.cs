@@ -424,38 +424,126 @@ public partial class MainWindow : Window
     {
         if (LastSearchResult is not { State: "ok" } player) return;
         int version = ++_cardVersion; _cardImage = null; _cardName = player.Username;
-        CardPreview.Source = null; SaveCardButton.IsEnabled = false; CardSaveStatus.Text = "正在加载 Minecraft 官方壁纸…"; ShowPanel(CardShade);
+
+        CardButton.IsEnabled = false;
+        var originalContent = CardButton.Content;
+        CardButton.Content = "生成中…";
+
         try
         {
-            var wallpaperTask = LoadOfficialWallpaper();
-            var avatarTask = player.Avatar == null ? LoadAvatar(player.Username, player) : Task.CompletedTask;
-            await Task.WhenAll(wallpaperTask, avatarTask);
-            if (version != _cardVersion) return;
-            _cardImage = StatsCardRenderer.Render(player, await wallpaperTask, DateTime.Now);
-            CardPreview.Source = _cardImage; SaveCardButton.IsEnabled = true; CardSaveStatus.Text = "保存后将自动复制图片，文件保存在「图片\\IMC.RE」文件夹。";
+            // 1. Ensure avatar is loaded before showing the card
+            if (player.Avatar == null)
+            {
+                if (AvatarCache.TryGetValue(player.Username, out var cached))
+                {
+                    player.Avatar = cached;
+                }
+                else
+                {
+                    var fetched = await FetchAvatarAsync(player.Username);
+                    if (fetched != null) player.Avatar = fetched;
+                }
+            }
+
+            // 2. Ensure wallpaper is loaded
+            var wallpaper = await LoadOfficialWallpaper();
+            if (version != _cardVersion || _closing) return;
+
+            // 3. Render card bitmap
+            _cardImage = StatsCardRenderer.Render(player, wallpaper, DateTime.Now);
+            CardPreview.Source = _cardImage;
+            SaveCardButton.IsEnabled = true;
+            CardSaveStatus.Text = "保存后将自动复制图片，文件保存在「图片\\IMC.RE」文件夹。";
+
+            // 4. Guaranteed to show panel ONLY after avatar & background are loaded
+            ShowPanel(CardShade);
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or InvalidDataException or NotSupportedException or FormatException)
+        catch (Exception ex)
         {
-            if (version == _cardVersion) CardSaveStatus.Text = "官方壁纸加载失败，请检查网络后重试。";
+            if (version == _cardVersion)
+            {
+                ModalMessage.Text = $"战绩图片生成失败：{ex.Message}";
+            }
+        }
+        finally
+        {
+            CardButton.IsEnabled = true;
+            CardButton.Content = originalContent;
         }
     }
     async Task<BitmapSource> LoadOfficialWallpaper()
     {
         if (_officialWallpaper != null) return _officialWallpaper;
-        const string url = "https://www.minecraft.net/content/dam/minecraftnet/games/minecraft/software/wallpapers_minecraft_ocean_monument_.zip";
-        using var response = await WallpaperHttp.GetAsync(url);
-        response.EnsureSuccessStatusCode();
-        if (response.Content.Headers.ContentLength is > 30_000_000) throw new InvalidDataException("Wallpaper archive is too large.");
-        var bytes = await response.Content.ReadAsByteArrayAsync();
-        if (bytes.Length > 30_000_000) throw new InvalidDataException("Wallpaper archive is too large.");
-        using var stream = new MemoryStream(bytes);
-        using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
-        var entry = zip.GetEntry("wallpaper_minecraft_ocean_monument_1920x1080.png") ?? throw new InvalidDataException("Wallpaper not found.");
-        if (entry.Length > 10_000_000) throw new InvalidDataException("Wallpaper is too large.");
-        using var entryStream = entry.Open();
-        using var imageStream = new MemoryStream(); entryStream.CopyTo(imageStream); imageStream.Position = 0;
-        var image = new BitmapImage(); image.BeginInit(); image.CacheOption = BitmapCacheOption.OnLoad; image.StreamSource = imageStream; image.EndInit(); image.Freeze();
-        _officialWallpaper = image; return image;
+
+        var cacheDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "IMCBedwarsOverlay");
+        var cacheFile = Path.Combine(cacheDir, "wallpaper_ocean_monument.png");
+        if (File.Exists(cacheFile))
+        {
+            try
+            {
+                var diskBytes = await File.ReadAllBytesAsync(cacheFile);
+                using var diskStream = new MemoryStream(diskBytes);
+                var diskImg = new BitmapImage();
+                diskImg.BeginInit();
+                diskImg.CacheOption = BitmapCacheOption.OnLoad;
+                diskImg.StreamSource = diskStream;
+                diskImg.EndInit();
+                diskImg.Freeze();
+                _officialWallpaper = diskImg;
+                return diskImg;
+            }
+            catch { }
+        }
+
+        try
+        {
+            const string url = "https://www.minecraft.net/content/dam/minecraftnet/games/minecraft/software/wallpapers_minecraft_ocean_monument_.zip";
+            using var response = await WallpaperHttp.GetAsync(url).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            var bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+            using var stream = new MemoryStream(bytes);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+            var entry = zip.GetEntry("wallpaper_minecraft_ocean_monument_1920x1080.png") ?? throw new InvalidDataException("Wallpaper not found.");
+            using var entryStream = entry.Open();
+            using var imageStream = new MemoryStream();
+            await entryStream.CopyToAsync(imageStream).ConfigureAwait(false);
+            var imageBytes = imageStream.ToArray();
+
+            try
+            {
+                Directory.CreateDirectory(cacheDir);
+                await File.WriteAllBytesAsync(cacheFile, imageBytes);
+            }
+            catch { }
+
+            imageStream.Position = 0;
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.StreamSource = imageStream;
+            image.EndInit();
+            image.Freeze();
+            _officialWallpaper = image;
+            return image;
+        }
+        catch
+        {
+            // Fallback: procedural dark gradient so card never fails
+            var visual = new DrawingVisual();
+            using (var dc = visual.RenderOpen())
+            {
+                var grad = new LinearGradientBrush(
+                    (Color)ColorConverter.ConvertFromString("#0C1A2E"),
+                    (Color)ColorConverter.ConvertFromString("#050A14"),
+                    new Point(0, 0), new Point(1, 1));
+                dc.DrawRectangle(grad, null, new Rect(0, 0, 1920, 1080));
+            }
+            var fallback = new RenderTargetBitmap(1920, 1080, 96, 96, PixelFormats.Pbgra32);
+            fallback.Render(visual);
+            fallback.Freeze();
+            _officialWallpaper = fallback;
+            return fallback;
+        }
     }
     void CloseCard_Click(object sender, RoutedEventArgs e) { _cardVersion++; HidePanel(CardShade); }
     void SaveCard_Click(object sender, RoutedEventArgs e)
