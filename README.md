@@ -18,7 +18,7 @@
 
 查询成功后可以选择「用图片查看」，生成带玩家头像、模式数据和日期的战绩卡，再将 PNG 保存到「图片\IMC.RE」文件夹并自动复制到剪贴板。背景使用 Minecraft 官方壁纸，首次生成需要联网加载。
 
-按 `\` 显示或隐藏悬浮窗；右上角 × 退出程序。可在设置中调整不透明度，并拖动窗口右下角的手柄按比例调整大小。
+默认按 `\` 显示或隐藏悬浮窗（支持在设置中交互式录制任意按键或组合键，如 `F8`、`Ctrl + Tab`，支持一键恢复默认）；右上角 × 退出程序。顶栏支持一键「清空」同局列表；查询玩家支持最近历史记录快速重查。悬浮窗自动记忆停靠位置与窗口尺寸，并可在设置中开启极危玩家进场音效预警。可在设置中调整不透明度，并拖动窗口右下角手柄缩放。
 
 起床战争显示胜率、MVP、FKDR、拆床和终杀；CounterEmber 显示 Rating、K/D、ADR 和爆头率。点击表头可排序。数据来自 IMC.RE 的公开战绩接口，头像通过 mc-heads.net 加载。
 
@@ -77,10 +77,10 @@ dotnet run --project .\tests\Overlay.Checks\Overlay.Checks.csproj -c Release
 将版本标签推送到 GitHub 后，Actions 会自动构建独立的 Windows x64 程序、打包并创建 Release。例如：
 
 ```powershell
-git tag v2.0-radar
-git push origin v2.0-radar
+git tag v2.1-radar
+git push origin v2.1-radar
 ```
 
-测试与探测标签（例如 `v1.3-probe`）会发布为预发行版本，正式版本标签（例如 `v2.0-radar`、`v2.0.0`）会发布为正式发行版（Release）。普通分支推送不会自动创建 Release。
+测试与探测标签（例如 `v1.3-probe`）会发布为预发行版本，正式版本标签（例如 `v2.1-radar`、`v2.0.0`）会发布为正式发行版（Release）。普通分支推送不会自动创建 Release。
 
 也可在 GitHub Actions 中手动运行工作流验证构建；手动运行只上传供下载的 Actions 构建产物，不创建 Release。

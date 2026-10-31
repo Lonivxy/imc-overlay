@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.IO;
@@ -81,7 +81,7 @@ public partial class MainWindow : Window
         LeaderboardGrid.ItemsSource = LeaderboardRows;
         ((ListCollectionView)CollectionViewSource.GetDefaultView(LeaderboardRows)).CustomSort = new PlayerComparer(_lbSortKey, _lbSortDescending);
         LeaderboardGrid.Columns.FirstOrDefault(c => c.SortMemberPath == _lbSortKey)?.SortDirection = ListSortDirection.Descending;
-        if (!Http.DefaultRequestHeaders.UserAgent.Any()) Http.DefaultRequestHeaders.UserAgent.ParseAdd("IMC-BedWars-Overlay/2.0");
+        if (!Http.DefaultRequestHeaders.UserAgent.Any()) Http.DefaultRequestHeaders.UserAgent.ParseAdd("IMC-Overlay/2.1");
         LoadConfig();
         _logWatcher = new MinecraftLogWatcher(OnLogEvent, _forceImc);
         _logWatcher.ActiveLogDetected += OnActiveLogDetected;

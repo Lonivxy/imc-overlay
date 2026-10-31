@@ -20,7 +20,7 @@ internal sealed class StatsApiClient
     public StatsApiClient(HttpClient? http = null)
     {
         _http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(12) };
-        if (!_http.DefaultRequestHeaders.UserAgent.Any()) _http.DefaultRequestHeaders.UserAgent.ParseAdd("IMC-BedWars-Overlay/2.0");
+        if (!_http.DefaultRequestHeaders.UserAgent.Any()) _http.DefaultRequestHeaders.UserAgent.ParseAdd("IMC-Overlay/2.1");
     }
 
     public async Task<(bool Success, string Message, long ElapsedMs)> CheckConnectivityAsync(CancellationToken token = default)
