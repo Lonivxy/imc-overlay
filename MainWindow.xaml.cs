@@ -1,9 +1,6 @@
 using System.Collections.ObjectModel;
-using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.IO;
-using System.IO.Compression;
-using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Windows;
@@ -31,9 +28,8 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wp, IntPtr lp);
     const int WM_HOTKEY = 0x0312, WM_NCLBUTTONDOWN = 0x00A1, HTCAPTION = 2;
     static readonly IntPtr HWND_TOPMOST = new(-1);
-    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(12) };
-    static readonly HttpClient WallpaperHttp = new() { Timeout = TimeSpan.FromSeconds(45) };
     readonly StatsApiClient _statsApi;
+    readonly IOverlayImages _overlayImages;
     readonly bool _interactiveServices;
     readonly ConfigService _config = new();
     readonly MinecraftLogWatcher _logWatcher;
@@ -44,17 +40,17 @@ public partial class MainWindow : Window
     string _mode = "bedwars";
     int _searchVersion;
     int _cardVersion;
+    int _leaderboardVersion;
+    int _leaderboardViewVersion;
+    int _myRankRequestVersion;
     BitmapSource? _cardImage;
-    BitmapSource? _officialWallpaper;
     string _cardName = "";
     double _resizeWidth;
     string _statusBeforeResize = "";
-    static readonly ConcurrentDictionary<string, ImageSource> AvatarCache = new(StringComparer.OrdinalIgnoreCase);
-    static readonly ConcurrentDictionary<string, Task<ImageSource?>> AvatarInFlight = new(StringComparer.OrdinalIgnoreCase);
-    static readonly SemaphoreSlim AvatarSlots = new(6, 6);
     static readonly Regex UserRegex = new(@"^[A-Za-z0-9_]{3,16}$", RegexOptions.Compiled);
     string _myPlayerName = "";
     readonly ObservableCollection<PlayerRow> LeaderboardRows = [];
+    readonly List<Button> _counterEmberLeaderboardTabs = [];
     string _lbSortKey = "Rating"; bool _lbSortDescending = true;
     LeaderboardData _currentLeaderboard = LeaderboardData.Empty;
     readonly ObservableCollection<PlayerRow> Players = [];
@@ -68,20 +64,22 @@ public partial class MainWindow : Window
     bool _threatAlert = true;
     readonly HashSet<string> _alertedThreatPlayers = new(StringComparer.OrdinalIgnoreCase);
     readonly List<string> _recentSearches = new();
+    Button? _counterEmberDetailsButton;
     DateTime _spaceAt; const double AspectRatio = 980d / 552d;
 
     public MainWindow() : this(new StatsApiClient(), true) { }
 
-    internal MainWindow(StatsApiClient statsApi, bool startLogWatcher)
+    internal MainWindow(StatsApiClient statsApi, bool startLogWatcher, IOverlayImages? overlayImages = null)
     {
-        _statsApi = statsApi; _interactiveServices = startLogWatcher;
-        InitializeComponent(); PlayersGrid.ItemsSource = Players;
+        _statsApi = statsApi; _overlayImages = overlayImages ?? new OverlayImages(); _interactiveServices = startLogWatcher;
+        InitializeComponent();
+        AddCounterEmberControls();
+        PlayersGrid.ItemsSource = Players;
         ((ListCollectionView)CollectionViewSource.GetDefaultView(Players)).CustomSort = new PlayerComparer(_sortKey, _sortDescending);
         PlayersGrid.Columns.First(c => c.SortMemberPath == _sortKey).SortDirection = ListSortDirection.Descending;
         LeaderboardGrid.ItemsSource = LeaderboardRows;
         ((ListCollectionView)CollectionViewSource.GetDefaultView(LeaderboardRows)).CustomSort = new PlayerComparer(_lbSortKey, _lbSortDescending);
         LeaderboardGrid.Columns.FirstOrDefault(c => c.SortMemberPath == _lbSortKey)?.SortDirection = ListSortDirection.Descending;
-        if (!Http.DefaultRequestHeaders.UserAgent.Any()) Http.DefaultRequestHeaders.UserAgent.ParseAdd("IMC-Overlay/2.1");
         LoadConfig();
         _logWatcher = new MinecraftLogWatcher(OnLogEvent, _forceImc);
         _logWatcher.ActiveLogDetected += OnActiveLogDetected;
@@ -90,6 +88,63 @@ public partial class MainWindow : Window
         if (startLogWatcher) _logWatcher.Start();
         if (_interactiveServices) { _ = CheckStartupConnectivityAsync(); _ = RefreshLeaderboardAsync(_mode); }
         Players.CollectionChanged += (_, _) => UpdateSummary(); _initialized = true;
+    }
+
+    void AddCounterEmberControls()
+    {
+        AddCounterEmberColumn(PlayersGrid, "KAST", "Kast", nameof(PlayerRow.KastLabel));
+        AddCounterEmberColumn(PlayersGrid, "下包", "Plants", nameof(PlayerRow.PlantsLabel));
+        AddCounterEmberColumn(PlayersGrid, "拆包", "Defuses", nameof(PlayerRow.DefusesLabel));
+        AddCounterEmberColumn(PlayersGrid, "最高 Rating", "MaxRating", nameof(PlayerRow.MaxRatingLabel));
+        AddCounterEmberColumn(LeaderboardGrid, "KAST", "Kast", nameof(PlayerRow.KastLabel));
+        AddCounterEmberColumn(LeaderboardGrid, "下包", "Plants", nameof(PlayerRow.PlantsLabel));
+        AddCounterEmberColumn(LeaderboardGrid, "拆包", "Defuses", nameof(PlayerRow.DefusesLabel));
+        AddCounterEmberColumn(LeaderboardGrid, "最高 Rating", "MaxRating", nameof(PlayerRow.MaxRatingLabel));
+
+        AddCounterEmberTab("Kast", "KAST 榜");
+        AddCounterEmberTab("Plants", "下包榜");
+        AddCounterEmberTab("Defuses", "拆包榜");
+        AddCounterEmberTab("MaxRating", "最高 Rating 榜");
+
+        _counterEmberDetailsButton = new Button
+        {
+            Content = "近期比赛与趋势",
+            Visibility = Visibility.Collapsed,
+            Padding = new Thickness(10, 4, 10, 4),
+            Margin = new Thickness(0, 0, 10, 0),
+            Background = new SolidColorBrush(Color.FromRgb(31, 42, 59)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(59, 77, 102)),
+            Foreground = (Brush)FindResource("Text"),
+            Cursor = Cursors.Hand
+        };
+        _counterEmberDetailsButton.Click += CounterEmberDetails_Click;
+        ((StackPanel)CardButton.Parent).Children.Insert(0, _counterEmberDetailsButton);
+    }
+
+    static void AddCounterEmberColumn(DataGrid grid, string header, string key, string bindingPath)
+    {
+        grid.Columns.Add(new DataGridTextColumn
+        {
+            Header = header,
+            SortMemberPath = key,
+            Binding = new Binding(bindingPath),
+            Width = new DataGridLength(1, DataGridLengthUnitType.Star),
+            Visibility = Visibility.Collapsed
+        });
+    }
+
+    void AddCounterEmberTab(string key, string label)
+    {
+        var button = new Button
+        {
+            Tag = key,
+            Content = label,
+            Style = (Style)FindResource("LbTabButton"),
+            Visibility = Visibility.Collapsed
+        };
+        button.Click += LbCategory_Click;
+        LbCategoryBar.Children.Add(button);
+        _counterEmberLeaderboardTabs.Add(button);
     }
 
     void LoadConfig()
@@ -249,7 +304,7 @@ public partial class MainWindow : Window
         if (ByName.ContainsKey(name)) return;
         var mode = _mode;
         var row = new PlayerRow { Username = name, State = "loading", GameMode = mode };
-        if (AvatarCache.TryGetValue(name, out var cached))
+        if (_overlayImages.TryGetAvatar(name, out var cached) && cached is not null)
             row.Avatar = cached;
         ByName[name] = row;
         Players.Add(row);
@@ -259,99 +314,18 @@ public partial class MainWindow : Window
     async Task LoadAvatar(string name, PlayerRow row)
     {
         if (string.IsNullOrWhiteSpace(name)) return;
-        if (AvatarCache.TryGetValue(name, out var cached))
+        if (_overlayImages.TryGetAvatar(name, out var cached) && cached is not null)
         {
-            SetRowAvatar(row, cached);
+            row.Avatar = cached;
             return;
         }
 
-        Task<ImageSource?> task;
-        lock (AvatarInFlight)
-        {
-            if (AvatarCache.TryGetValue(name, out cached))
-            {
-                SetRowAvatar(row, cached);
-                return;
-            }
-
-            if (!AvatarInFlight.TryGetValue(name, out task!))
-            {
-                task = FetchAvatarAsync(name);
-                AvatarInFlight[name] = task;
-            }
-        }
-
         try
         {
-            var image = await task.ConfigureAwait(false);
-            if (image != null)
-            {
-                SetRowAvatar(row, image);
-            }
+            var image = await _overlayImages.GetAvatarAsync(name);
+            if (image != null && !_closing && Players.Contains(row)) row.Avatar = image;
         }
         catch { }
-        finally
-        {
-            AvatarInFlight.TryRemove(name, out _);
-        }
-    }
-
-    static async Task<ImageSource?> FetchAvatarAsync(string name)
-    {
-        if (AvatarCache.TryGetValue(name, out var cached)) return cached;
-
-        await AvatarSlots.WaitAsync().ConfigureAwait(false);
-        try
-        {
-            if (AvatarCache.TryGetValue(name, out cached)) return cached;
-
-            string[] urls = [
-                $"https://crafthead.net/avatar/{Uri.EscapeDataString(name)}/32",
-                $"https://mc-heads.net/avatar/{Uri.EscapeDataString(name)}/32",
-                $"https://minotar.net/avatar/{Uri.EscapeDataString(name)}/32",
-                $"https://cravatar.eu/avatar/{Uri.EscapeDataString(name)}/32"
-            ];
-
-            byte[]? bytes = null;
-            foreach (var url in urls)
-            {
-                try
-                {
-                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                    bytes = await Http.GetByteArrayAsync(url, cts.Token).ConfigureAwait(false);
-                    if (bytes != null && bytes.Length > 0) break;
-                }
-                catch { }
-            }
-
-            if (bytes != null && bytes.Length > 0)
-            {
-                using var stream = new MemoryStream(bytes);
-                var image = new BitmapImage();
-                image.BeginInit();
-                image.CacheOption = BitmapCacheOption.OnLoad;
-                image.StreamSource = stream;
-                image.EndInit();
-                image.Freeze();
-
-                AvatarCache[name] = image;
-                return image;
-            }
-        }
-        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException or NotSupportedException or FormatException or ArgumentException) { }
-        finally
-        {
-            AvatarSlots.Release();
-        }
-        return null;
-    }
-
-    void SetRowAvatar(PlayerRow row, ImageSource avatar)
-    {
-        if (Dispatcher.CheckAccess())
-            row.Avatar = avatar;
-        else
-            _ = Dispatcher.InvokeAsync(() => row.Avatar = avatar);
     }
 
     async Task LoadStats(string name, PlayerRow target, string mode, CancellationToken token)
@@ -359,7 +333,9 @@ public partial class MainWindow : Window
         try
         {
             var result = await _statsApi.FetchAsync(name, mode, token);
-            if (!token.IsCancellationRequested && !_closing && _mode == mode && ByName.TryGetValue(name, out var current) && ReferenceEquals(current, target))
+            if (!token.IsCancellationRequested && !_closing && _mode == mode
+                && ByName.TryGetValue(name, out var current) && ReferenceEquals(current, target)
+                && Players.Contains(target))
             {
                 var curAvatar = target.Avatar;
                 result.ApplyLeaderboard(_currentLeaderboard);
@@ -367,7 +343,7 @@ public partial class MainWindow : Window
                 if (target.Avatar == null)
                 {
                     if (curAvatar != null) target.Avatar = curAvatar;
-                    else if (AvatarCache.TryGetValue(name, out var cached)) target.Avatar = cached;
+                    else if (_overlayImages.TryGetAvatar(name, out var cached)) target.Avatar = cached;
                 }
                 if (_threatAlert && target.IsHighRating && _alertedThreatPlayers.Add(name))
                 {
@@ -386,6 +362,7 @@ public partial class MainWindow : Window
         _searchRequests.Cancel(); _searchRequests.Dispose(); _searchRequests = new(); var token = _searchRequests.Token;
         var mode = _mode; var version = ++_searchVersion;
         ModalMessage.Text = "正在查询，遇到服务限流时会自动重试…"; CopyButton.Visibility = Visibility.Collapsed; CardButton.Visibility = Visibility.Collapsed;
+        if (_counterEmberDetailsButton != null) _counterEmberDetailsButton.Visibility = Visibility.Collapsed;
         PlayerRow result;
         try { result = await _statsApi.FetchAsync(name, mode, token); }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
@@ -394,8 +371,23 @@ public partial class MainWindow : Window
         _recentSearches.Insert(0, name);
         if (_recentSearches.Count > 6) _recentSearches.RemoveAt(_recentSearches.Count - 1);
         UpdateRecentSearchChips();
-        if (result?.State == "ok") { ModalMessage.Text = FormatStats(result); CopyButton.Visibility = Visibility.Visible; CardButton.Visibility = Visibility.Visible; }
+        if (result?.State == "ok")
+        {
+            ModalMessage.Text = FormatStats(result);
+            CopyButton.Visibility = Visibility.Visible;
+            CardButton.Visibility = Visibility.Visible;
+            if (_counterEmberDetailsButton != null)
+                _counterEmberDetailsButton.Visibility = result.GameMode == "counterember" && (result.RatingTrend.Length > 0 || result.RecentMatches.Count > 0)
+                    ? Visibility.Visible : Visibility.Collapsed;
+        }
         else ModalMessage.Text = result?.State == "unregistered" ? "未找到该玩家在当前模式的记录。" : $"查询失败：{result?.Error ?? "请检查网络后重试。"}";
+    }
+
+    void CounterEmberDetails_Click(object sender, RoutedEventArgs e)
+    {
+        if (LastSearchResult is not { State: "ok", GameMode: "counterember" } player) return;
+        var details = new CounterEmberDetailsWindow(player) { Owner = this };
+        details.ShowDialog();
     }
     void ShowPanel(Border panel)
     {
@@ -417,15 +409,30 @@ public partial class MainWindow : Window
         animation.Completed += (_, _) => { if (ReferenceEquals(panel.Tag, marker)) { panel.Visibility = Visibility.Collapsed; panel.BeginAnimation(OpacityProperty, null); panel.Opacity = 1; } };
         panel.BeginAnimation(OpacityProperty, animation);
     }
-    void Search_Click(object sender, RoutedEventArgs e) { _searchRequests.Cancel(); _searchVersion++; LastSearchResult = null; ModalTitle.Text = "查询玩家战绩"; SearchBox.Text = ""; ModalMessage.Text = "输入玩家名，最多自动重试 3 次。"; CopyButton.Visibility = Visibility.Collapsed; CardButton.Visibility = Visibility.Collapsed; UpdateRecentSearchChips(); ShowPanel(ModalShade); SearchBox.Focus(); }
-    void OnActiveLogDetected(string path)
+    void Search_Click(object sender, RoutedEventArgs e) { _searchRequests.Cancel(); _searchVersion++; LastSearchResult = null; ModalTitle.Text = "查询玩家战绩"; SearchBox.Text = ""; ModalMessage.Text = "输入玩家名，最多自动重试 3 次。"; CopyButton.Visibility = Visibility.Collapsed; CardButton.Visibility = Visibility.Collapsed; if (_counterEmberDetailsButton != null) _counterEmberDetailsButton.Visibility = Visibility.Collapsed; UpdateRecentSearchChips(); ShowPanel(ModalShade); SearchBox.Focus(); }
+    void OnActiveLogDetected(LogSource? source)
     {
         if (Dispatcher.HasShutdownStarted) return;
         _ = Dispatcher.BeginInvoke(() =>
         {
             if (_closing) return;
+            if (source is null)
+            {
+                LogPathBox.Text = "未检测到运行中的 Minecraft 客户端日志";
+                LogPathBox.ToolTip = "启动 Minecraft 客户端后会自动识别其 latest.log。";
+                FooterStatus.ToolTip = null;
+                if (FooterStatus.Text.StartsWith("就绪 · 客户端日志", StringComparison.Ordinal))
+                    FooterStatus.Text = "就绪";
+                return;
+            }
+
+            var path = source.Path;
+            var sourceDescription = source.ConfirmedByOpenHandle
+                ? "已通过该 Java 进程正在打开的日志文件句柄确认"
+                : "无法读取该 Java 进程的文件句柄，按游戏目录推测";
             LogPathBox.Text = path;
-            FooterStatus.ToolTip = $"当前客户端日志: {path}";
+            LogPathBox.ToolTip = $"{sourceDescription}：{path}";
+            FooterStatus.ToolTip = $"当前客户端日志（{sourceDescription}）：{path}";
             if (FooterStatus.Text is "就绪" or "" || FooterStatus.Text.StartsWith("就绪 · 客户端日志"))
             {
                 var fileName = System.IO.Path.GetFileName(path);
@@ -436,8 +443,8 @@ public partial class MainWindow : Window
     }
     void Settings_Click(object sender, RoutedEventArgs e)
     {
-        if (!string.IsNullOrEmpty(_logWatcher.ActiveLogPath))
-            LogPathBox.Text = _logWatcher.ActiveLogPath;
+        if (_logWatcher.ActiveLogSource is { } source)
+            OnActiveLogDetected(source);
         ShowPanel(SettingsShade);
     }
     void OpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) { Opacity = e.NewValue; }
@@ -446,20 +453,37 @@ public partial class MainWindow : Window
     void SettingsClose_Click(object sender, RoutedEventArgs e) { _forceImc = ForceImcBox.IsChecked == true; _myPlayerName = MyPlayerNameBox.Text.Trim(); _logWatcher.SetForceImc(_forceImc); ApplyMode(ModeCombo.SelectedIndex == 1 ? "counterember" : "bedwars", true); SaveConfig(); HidePanel(SettingsShade); }
     void ApplyMode(string mode, bool refresh)
     {
-        bool changed = _mode != mode; _mode = mode; _searchRequests.Cancel(); _searchVersion++;
+        bool changed = _mode != mode;
+        if (changed)
+        {
+            _leaderboardVersion++;
+            _leaderboardViewVersion++;
+            _lbSortKey = "Rating";
+            _lbSortDescending = true;
+            _currentLeaderboard = LeaderboardData.Empty;
+            LeaderboardRows.Clear();
+        }
+        _mode = mode; _searchRequests.Cancel(); _searchVersion++;
         ModeTitle.Text = mode == "counterember" ? "CounterEmber" : "起床战争";
         bool ce = mode == "counterember";
         foreach (var col in PlayersGrid.Columns)
         {
             var key = col.SortMemberPath;
             bool bwOnly = key is "threat" or "Fkdr" or "BedsBroken" or "FinalKills";
-            bool ceOnly = key is "KD" or "Adr" or "HsRate";
+            bool ceOnly = key is "KD" or "Adr" or "HsRate" or "Kast" or "Plants" or "Defuses" or "MaxRating";
             col.Visibility = (bwOnly && ce) || (ceOnly && !ce) ? Visibility.Collapsed : Visibility.Visible;
         }
         _sortKey = "Rating"; _sortDescending = true;
         foreach (var col in PlayersGrid.Columns) col.SortDirection = col.SortMemberPath == _sortKey ? ListSortDirection.Descending : null;
         ((ListCollectionView)CollectionViewSource.GetDefaultView(Players)).CustomSort = new PlayerComparer(_sortKey, true);
-        foreach (var col in LeaderboardGrid.Columns) { var key = col.SortMemberPath; bool bwOnly = key is "Fkdr" or "BedsBroken" or "FinalKills"; bool ceOnly = key is "KD" or "Adr" or "HsRate"; col.Visibility = (bwOnly && ce) || (ceOnly && !ce) ? Visibility.Collapsed : Visibility.Visible; }
+        foreach (var col in LeaderboardGrid.Columns)
+        {
+            var key = col.SortMemberPath;
+            bool bwOnly = key is "Fkdr" or "BedsBroken" or "FinalKills";
+            bool ceOnly = key is "KD" or "Adr" or "HsRate" or "Kast" or "Plants" or "Defuses" or "MaxRating";
+            col.Visibility = (bwOnly && ce) || (ceOnly && !ce) ? Visibility.Collapsed : Visibility.Visible;
+            col.SortDirection = changed && key == "Rating" ? ListSortDirection.Descending : null;
+        }
         if (LbCategoryBar != null)
         {
             LbCatFkdr.Visibility = ce ? Visibility.Collapsed : Visibility.Visible;
@@ -468,6 +492,9 @@ public partial class MainWindow : Window
             LbCatKd.Visibility = ce ? Visibility.Visible : Visibility.Collapsed;
             LbCatAdr.Visibility = ce ? Visibility.Visible : Visibility.Collapsed;
             LbCatHsRate.Visibility = ce ? Visibility.Visible : Visibility.Collapsed;
+            foreach (var tab in _counterEmberLeaderboardTabs)
+                tab.Visibility = ce ? Visibility.Visible : Visibility.Collapsed;
+            UpdateCategoryButtons(_lbSortKey);
         }
         if (_interactiveServices) UpdateMyRankSummary();
         if (changed && refresh) { var names = Players.Select(p => p.Username).ToArray(); SetRoster(names); FooterStatus.Text = "已切换模式，正在重新查询名单…"; LastSearchResult = null; }
@@ -475,20 +502,21 @@ public partial class MainWindow : Window
     }
     async Task RefreshLeaderboardAsync(string mode)
     {
+        var version = ++_leaderboardVersion;
         try
         {
             var lb = await _statsApi.GetLeaderboardAsync(mode).ConfigureAwait(false);
-            if (mode == _mode)
+            await Dispatcher.InvokeAsync(() =>
             {
+                if (_closing || version != _leaderboardVersion || mode != _mode) return;
                 _currentLeaderboard = lb;
-                _ = Dispatcher.BeginInvoke(() =>
-                {
-                    if (_closing) return;
-                    foreach (var p in Players) p.ApplyLeaderboard(_currentLeaderboard);
-                    LastSearchResult?.ApplyLeaderboard(_currentLeaderboard);
-                    CollectionViewSource.GetDefaultView(Players).Refresh();
-                });
-            }
+                foreach (var p in Players) p.ApplyLeaderboard(lb);
+                LastSearchResult?.ApplyLeaderboard(lb);
+                CollectionViewSource.GetDefaultView(Players).Refresh();
+                UpdateMyRankSummary();
+                if (LeaderboardShade.Visibility == Visibility.Visible)
+                    _ = SwitchLeaderboardCategoryAsync(_lbSortKey, _lbSortDescending);
+            });
         }
         catch { }
     }
@@ -513,19 +541,19 @@ public partial class MainWindow : Window
             // 1. Ensure avatar is loaded before showing the card
             if (player.Avatar == null)
             {
-                if (AvatarCache.TryGetValue(player.Username, out var cached))
+                if (_overlayImages.TryGetAvatar(player.Username, out var cached) && cached is not null)
                 {
                     player.Avatar = cached;
                 }
                 else
                 {
-                    var fetched = await FetchAvatarAsync(player.Username);
+                    var fetched = await _overlayImages.GetAvatarAsync(player.Username);
                     if (fetched != null) player.Avatar = fetched;
                 }
             }
 
             // 2. Ensure wallpaper is loaded
-            var wallpaper = await LoadOfficialWallpaper();
+            var wallpaper = await _overlayImages.GetOfficialWallpaperAsync();
             if (version != _cardVersion || _closing) return;
 
             // 3. Render card bitmap
@@ -548,80 +576,6 @@ public partial class MainWindow : Window
         {
             CardButton.IsEnabled = true;
             CardButton.Content = originalContent;
-        }
-    }
-    async Task<BitmapSource> LoadOfficialWallpaper()
-    {
-        if (_officialWallpaper != null) return _officialWallpaper;
-
-        var cacheDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "IMCBedwarsOverlay");
-        var cacheFile = Path.Combine(cacheDir, "wallpaper_ocean_monument.png");
-        if (File.Exists(cacheFile))
-        {
-            try
-            {
-                var diskBytes = await File.ReadAllBytesAsync(cacheFile);
-                using var diskStream = new MemoryStream(diskBytes);
-                var diskImg = new BitmapImage();
-                diskImg.BeginInit();
-                diskImg.CacheOption = BitmapCacheOption.OnLoad;
-                diskImg.StreamSource = diskStream;
-                diskImg.EndInit();
-                diskImg.Freeze();
-                _officialWallpaper = diskImg;
-                return diskImg;
-            }
-            catch { }
-        }
-
-        try
-        {
-            const string url = "https://www.minecraft.net/content/dam/minecraftnet/games/minecraft/software/wallpapers_minecraft_ocean_monument_.zip";
-            using var response = await WallpaperHttp.GetAsync(url).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            var bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
-            using var stream = new MemoryStream(bytes);
-            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
-            var entry = zip.GetEntry("wallpaper_minecraft_ocean_monument_1920x1080.png") ?? throw new InvalidDataException("Wallpaper not found.");
-            using var entryStream = entry.Open();
-            using var imageStream = new MemoryStream();
-            await entryStream.CopyToAsync(imageStream).ConfigureAwait(false);
-            var imageBytes = imageStream.ToArray();
-
-            try
-            {
-                Directory.CreateDirectory(cacheDir);
-                await File.WriteAllBytesAsync(cacheFile, imageBytes);
-            }
-            catch { }
-
-            imageStream.Position = 0;
-            var image = new BitmapImage();
-            image.BeginInit();
-            image.CacheOption = BitmapCacheOption.OnLoad;
-            image.StreamSource = imageStream;
-            image.EndInit();
-            image.Freeze();
-            _officialWallpaper = image;
-            return image;
-        }
-        catch
-        {
-            // Fallback: procedural dark gradient so card never fails
-            var visual = new DrawingVisual();
-            using (var dc = visual.RenderOpen())
-            {
-                var grad = new LinearGradientBrush(
-                    (Color)ColorConverter.ConvertFromString("#0C1A2E"),
-                    (Color)ColorConverter.ConvertFromString("#050A14"),
-                    new Point(0, 0), new Point(1, 1));
-                dc.DrawRectangle(grad, null, new Rect(0, 0, 1920, 1080));
-            }
-            var fallback = new RenderTargetBitmap(1920, 1080, 96, 96, PixelFormats.Pbgra32);
-            fallback.Render(visual);
-            fallback.Freeze();
-            _officialWallpaper = fallback;
-            return fallback;
         }
     }
     void CloseCard_Click(object sender, RoutedEventArgs e) { _cardVersion++; HidePanel(CardShade); }
@@ -659,7 +613,7 @@ public partial class MainWindow : Window
         try { Clipboard.SetText(FormatStats(p)); FooterStatus.Text = $"已复制 {p.Username} 的战绩"; } catch { FooterStatus.Text = "复制失败，请稍后重试"; }
     }
     static string FormatStats(PlayerRow p) => p.GameMode == "counterember"
-        ? $"[IMC.RE CounterEmber] {p.Username} | 胜率: {p.WinRate:P1} ({p.Wins}胜/{p.Matches}场) | Rating: {p.Rating:F2} | K/D: {p.KD:F2} | ADR: {p.Adr:F1} | 爆头率: {p.HsRate:P1} | MVP: {p.MVPs} | 击杀: {p.Kills}"
+        ? $"[IMC.RE CounterEmber] {p.Username} | 胜率: {p.WinRate:P1} ({p.Wins}胜/{p.Matches}场) | Rating: {p.RatingLabel} (最高 {(p.Matches > 0 ? p.MaxRating.ToString("F2") : "—")}) | K/D: {p.KD:F2} | KAST: {p.Kast:P1} | ADR: {p.Adr:F1} | 爆头率: {p.HsRate:P1} | MVP: {p.MVPs} | 击杀: {p.Kills} | 下包: {p.Plants} | 拆包: {p.Defuses}"
         : $"[IMC.RE 起床战争] {p.Username} | 估算 Rating: {p.RatingLabel} | 胜率: {p.WinRate:P1} ({p.Wins}胜/{p.Matches}场) | FKDR: {p.Fkdr:F2} | 拆床: {p.BedsBroken} | 终杀: {p.FinalKills} | MVP: {p.MVPs} | 击杀: {p.Kills}";
     void UpdateSummary()
     {
@@ -733,48 +687,59 @@ public partial class MainWindow : Window
 
     void UpdateMyRankSummary()
     {
-        if (string.IsNullOrWhiteSpace(_myPlayerName))
+        var requestVersion = ++_myRankRequestVersion;
+        var name = _myPlayerName;
+        var mode = _mode;
+        if (string.IsNullOrWhiteSpace(name))
         {
             MyRankStatus.Text = "";
             return;
         }
 
-        if (_currentLeaderboard.Players.Count > 0)
+        if (_currentLeaderboard.Mode == mode && _currentLeaderboard.Players.Count > 0)
         {
-            var found = _currentLeaderboard.Players.FirstOrDefault(p => string.Equals(p.Name, _myPlayerName, StringComparison.OrdinalIgnoreCase));
+            var found = _currentLeaderboard.Players.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
             if (found != null)
             {
-                double rating = _mode == "counterember" ? found.Metrics.Rating : (BedwarsRatingCalculator.Calculate(found.Matches, found.WinRate, found.Metrics.Fkdr, found.Metrics.AvgBeds) ?? 0.0);
+                if (found.Matches <= 0)
+                {
+                    MyRankStatus.Text = "暂无榜单记录";
+                    return;
+                }
+                double rating = mode == "counterember" ? found.Metrics.Rating : (BedwarsRatingCalculator.Calculate(found.Matches, found.Wins, found.Metrics.Fkdr, found.Metrics.Kd) ?? 0.0);
                 int? rank = _currentLeaderboard.GetRankRating(rating);
-                MyRankStatus.Text = rank.HasValue ? $"全服 #{rank} (Rating {rating:F2})" : $"未入榜 (Rating {rating:F2})";
+                string ratingLabel = $"{rating:F2}{(found.Matches < 10 ? "*" : "")}";
+                MyRankStatus.Text = rank.HasValue ? $"全服 #{rank} (Rating {ratingLabel})" : $"未入榜 (Rating {ratingLabel})";
                 return;
             }
         }
-        MyRankStatus.Text = "查询中…";
-        _ = FetchMyRankSummaryAsync(_myPlayerName, _mode);
+        MyRankStatus.Text = _currentLeaderboard.Mode == mode ? "查询中…" : "等待当前模式榜单…";
+        _ = FetchMyRankSummaryAsync(name, mode, requestVersion);
     }
 
-    async Task FetchMyRankSummaryAsync(string name, string mode)
+    async Task FetchMyRankSummaryAsync(string name, string mode, int requestVersion)
     {
         try
         {
             var row = await _statsApi.FetchAsync(name, mode, CancellationToken.None).ConfigureAwait(true);
-            if (string.Equals(_myPlayerName, name, StringComparison.OrdinalIgnoreCase))
+            if (_closing || requestVersion != _myRankRequestVersion || mode != _mode
+                || !string.Equals(_myPlayerName, name, StringComparison.OrdinalIgnoreCase)) return;
+            if (_currentLeaderboard.Mode != mode || _currentLeaderboard.Players.Count == 0)
             {
-                if (row.State == "ok" && row.OverallRating.HasValue)
-                {
-                    int? rank = _currentLeaderboard.GetRankRating(row.OverallRating.Value);
-                    MyRankStatus.Text = rank.HasValue ? $"全服 #{rank} (Rating {row.OverallRating:F2})" : $"未入榜 (Rating {row.OverallRating:F2})";
-                }
-                else
-                {
-                    MyRankStatus.Text = "暂无榜单记录";
-                }
+                MyRankStatus.Text = "等待当前模式榜单…";
+                return;
             }
+            if (row.State == "ok" && row.OverallRating.HasValue)
+            {
+                int? rank = _currentLeaderboard.GetRankRating(row.OverallRating.Value);
+                MyRankStatus.Text = rank.HasValue ? $"全服 #{rank} (Rating {row.RatingLabel})" : $"未入榜 (Rating {row.RatingLabel})";
+            }
+            else MyRankStatus.Text = "暂无榜单记录";
         }
         catch
         {
-            if (string.Equals(_myPlayerName, name, StringComparison.OrdinalIgnoreCase))
+            if (!_closing && requestVersion == _myRankRequestVersion && mode == _mode
+                && string.Equals(_myPlayerName, name, StringComparison.OrdinalIgnoreCase))
                 MyRankStatus.Text = "未查到战绩";
         }
     }
@@ -792,14 +757,23 @@ public partial class MainWindow : Window
 
     async void LeaderboardRefresh_Click(object sender, RoutedEventArgs e)
     {
+        var mode = _mode;
+        var version = ++_leaderboardVersion;
         FooterStatus.Text = "正在刷新天梯排行榜…";
-        var lb = await _statsApi.GetLeaderboardAsync(_mode, force: true).ConfigureAwait(true);
+        var result = await _statsApi.GetLeaderboardWithStatusAsync(mode, force: true).ConfigureAwait(true);
+        if (_closing || version != _leaderboardVersion || mode != _mode) return;
+        var lb = result.Data;
         _currentLeaderboard = lb;
-        foreach (var p in Players) p.ApplyLeaderboard(_currentLeaderboard);
-        LastSearchResult?.ApplyLeaderboard(_currentLeaderboard);
+        foreach (var p in Players) p.ApplyLeaderboard(lb);
+        LastSearchResult?.ApplyLeaderboard(lb);
         UpdateMyRankSummary();
         await SwitchLeaderboardCategoryAsync(_lbSortKey, _lbSortDescending).ConfigureAwait(true);
-        FooterStatus.Text = $"天梯排行榜已刷新（{lb.Players.Count} 位达标玩家）";
+        if (_closing || version != _leaderboardVersion || mode != _mode) return;
+        FooterStatus.Text = result.IsFresh
+            ? $"天梯排行榜已刷新（{lb.Players.Count} 位达标玩家）"
+            : lb.Players.Count > 0
+                ? $"刷新失败，当前显示缓存数据（{lb.Players.Count} 位玩家）"
+                : "刷新失败，暂无可用榜单数据";
     }
 
     async void LbCategory_Click(object sender, RoutedEventArgs e)
@@ -846,27 +820,38 @@ public partial class MainWindow : Window
         "KD" => row.KDRank,
         "Adr" => row.AdrRank,
         "HsRate" => row.HsRateRank,
+        "Kast" => row.KastRank,
+        "Plants" => row.PlantsRank,
+        "Defuses" => row.DefusesRank,
+        "MaxRating" => row.MaxRatingRank,
         _ => row.RatingRank
     };
 
     async Task SwitchLeaderboardCategoryAsync(string metric, bool descending = true)
     {
+        var mode = _mode;
+        var leaderboardVersion = _leaderboardVersion;
+        var viewVersion = ++_leaderboardViewVersion;
         _lbSortKey = metric;
         _lbSortDescending = descending;
 
-        if (_currentLeaderboard.Players.Count == 0)
+        if (_currentLeaderboard.Players.Count == 0 || _currentLeaderboard.Mode != mode)
         {
-            _currentLeaderboard = await _statsApi.GetLeaderboardAsync(_mode).ConfigureAwait(true);
+            var lb = await _statsApi.GetLeaderboardAsync(mode).ConfigureAwait(true);
+            if (_closing || mode != _mode || leaderboardVersion != _leaderboardVersion || viewVersion != _leaderboardViewVersion) return;
+            _currentLeaderboard = lb;
             foreach (var p in Players) p.ApplyLeaderboard(_currentLeaderboard);
             LastSearchResult?.ApplyLeaderboard(_currentLeaderboard);
         }
 
-        bool ce = _mode == "counterember";
+        if (_closing || mode != _mode || leaderboardVersion != _leaderboardVersion || viewVersion != _leaderboardViewVersion) return;
+
+        bool ce = mode == "counterember";
         foreach (var col in LeaderboardGrid.Columns)
         {
             var k = col.SortMemberPath;
             bool bwOnly = k is "Fkdr" or "BedsBroken" or "FinalKills";
-            bool ceOnly = k is "KD" or "Adr" or "HsRate";
+            bool ceOnly = k is "KD" or "Adr" or "HsRate" or "Kast" or "Plants" or "Defuses" or "MaxRating";
             col.Visibility = (bwOnly && ce) || (ceOnly && !ce) ? Visibility.Collapsed : Visibility.Visible;
             col.SortDirection = col.SortMemberPath == metric ? (descending ? ListSortDirection.Descending : ListSortDirection.Ascending) : null;
         }
@@ -879,6 +864,8 @@ public partial class MainWindow : Window
             LbCatKd.Visibility = ce ? Visibility.Visible : Visibility.Collapsed;
             LbCatAdr.Visibility = ce ? Visibility.Visible : Visibility.Collapsed;
             LbCatHsRate.Visibility = ce ? Visibility.Visible : Visibility.Collapsed;
+            foreach (var tab in _counterEmberLeaderboardTabs)
+                tab.Visibility = ce ? Visibility.Visible : Visibility.Collapsed;
             UpdateCategoryButtons(metric);
         }
 
@@ -895,12 +882,16 @@ public partial class MainWindow : Window
             "KD" => "K/D 榜",
             "Adr" => "ADR 榜",
             "HsRate" => "爆头率榜",
+            "Kast" => "KAST 榜",
+            "Plants" => "下包榜",
+            "Defuses" => "拆包榜",
+            "MaxRating" => "最高 Rating 榜",
             _ => "Rating 榜"
         };
         LbSubTitle.Text = $" (Top 50 · {metricName}) — {(ce ? "CounterEmber" : "起床战争")}";
 
         var allRows = _currentLeaderboard.Players
-            .Select(p => FromLeaderboardPlayer(p, _mode, _currentLeaderboard))
+            .Select(p => FromLeaderboardPlayer(p, mode, _currentLeaderboard))
             .ToList();
 
         IEnumerable<PlayerRow> sorted = metric switch
@@ -916,6 +907,10 @@ public partial class MainWindow : Window
             "KD" => allRows.OrderByDescending(r => r.KD).ThenByDescending(r => r.Kills),
             "Adr" => allRows.OrderByDescending(r => r.Adr).ThenByDescending(r => r.Matches),
             "HsRate" => allRows.OrderByDescending(r => r.HsRate).ThenByDescending(r => r.Matches),
+            "Kast" => allRows.OrderByDescending(r => r.Kast).ThenByDescending(r => r.Matches),
+            "Plants" => allRows.OrderByDescending(r => r.Plants).ThenByDescending(r => r.Matches),
+            "Defuses" => allRows.OrderByDescending(r => r.Defuses).ThenByDescending(r => r.Matches),
+            "MaxRating" => allRows.OrderByDescending(r => r.MaxRating).ThenByDescending(r => r.Matches),
             _ => allRows.OrderByDescending(r => r.OverallRating ?? 0.0).ThenByDescending(r => r.Matches)
         };
 
@@ -941,7 +936,8 @@ public partial class MainWindow : Window
             {
                 try
                 {
-                    var fetched = await _statsApi.FetchAsync(_myPlayerName, _mode, CancellationToken.None).ConfigureAwait(true);
+                    var fetched = await _statsApi.FetchAsync(_myPlayerName, mode, CancellationToken.None).ConfigureAwait(true);
+                    if (_closing || mode != _mode || leaderboardVersion != _leaderboardVersion || viewVersion != _leaderboardViewVersion) return;
                     if (fetched.State == "ok")
                     {
                         myRow = new PlayerRow();
@@ -958,7 +954,7 @@ public partial class MainWindow : Window
                 pinned.CopyFrom(myRow);
                 pinned.IsPinnedSelf = true;
                 pinned.LeaderboardDisplayRank = GetRankForMetric(pinned, metric) ?? StatRankInfo.None;
-                if (pinned.Avatar == null && AvatarCache.TryGetValue(pinned.Username, out var myAvatar))
+                if (pinned.Avatar == null && _overlayImages.TryGetAvatar(pinned.Username, out var myAvatar))
                     pinned.Avatar = myAvatar;
                 LeaderboardRows.Add(pinned);
 
@@ -974,9 +970,13 @@ public partial class MainWindow : Window
                     "KD" => $"K/D: {pinned.KD:F2}",
                     "Adr" => $"ADR: {pinned.Adr:F1}",
                     "HsRate" => $"爆头率: {pinned.HsRate:P1}",
-                    _ => $"Rating: {pinned.OverallRating:F2}"
+                    "Kast" => $"KAST: {pinned.Kast:P1}",
+                    "Plants" => $"下包: {pinned.Plants}",
+                    "Defuses" => $"拆包: {pinned.Defuses}",
+                    "MaxRating" => $"最高 Rating: {pinned.MaxRatingLabel}",
+                    _ => $"Rating: {pinned.RatingLabel}"
                 };
-                LbMySummary.Text = $"我的全服排名: {pinned.LeaderboardDisplayRank.Tag} ({metricName}) · {valStr} · Rating: {pinned.OverallRating:F2} ({pinned.RatingRank.Tag})";
+                LbMySummary.Text = $"我的全服排名: {pinned.LeaderboardDisplayRank.Tag} ({metricName}) · {valStr} · Rating: {pinned.RatingLabel} ({pinned.RatingRank.Tag})";
             }
             else
             {
@@ -1014,11 +1014,12 @@ public partial class MainWindow : Window
         ((ListCollectionView)CollectionViewSource.GetDefaultView(LeaderboardRows)).CustomSort = new PlayerComparer(metric, descending);
     }
 
-    static PlayerRow FromLeaderboardPlayer(LeaderboardPlayer p, string mode, LeaderboardData lb)
+    PlayerRow FromLeaderboardPlayer(LeaderboardPlayer p, string mode, LeaderboardData lb)
     {
         var row = new PlayerRow
         {
             Username = p.Name,
+            Uuid = p.Uuid,
             GameMode = mode,
             State = "ok",
             Matches = p.Matches,
@@ -1033,9 +1034,13 @@ public partial class MainWindow : Window
             KD = p.Metrics.Kd,
             Rating = p.Metrics.Rating,
             Adr = p.Metrics.Adr,
-            HsRate = p.Metrics.HsRate
+            HsRate = p.Metrics.HsRate,
+            Kast = p.Metrics.Kast,
+            Plants = p.Metrics.Plants,
+            Defuses = p.Metrics.Defuses,
+            MaxRating = p.Metrics.MaxRating
         };
-        if (AvatarCache.TryGetValue(p.Name, out var cached))
+        if (_overlayImages.TryGetAvatar(p.Name, out var cached))
         {
             row.Avatar = cached;
         }
@@ -1075,6 +1080,10 @@ public partial class MainWindow : Window
             "KD" => "KD",
             "Adr" => "Adr",
             "HsRate" => "HsRate",
+            "Kast" => "Kast",
+            "Plants" => "Plants",
+            "Defuses" => "Defuses",
+            "MaxRating" => "MaxRating",
             _ => "Rating"
         };
 

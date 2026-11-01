@@ -155,6 +155,10 @@ public sealed class LeaderboardData
     readonly double[] _kds;
     readonly double[] _adrs;
     readonly double[] _hsRates;
+    readonly double[] _kasts;
+    readonly long[] _plants;
+    readonly long[] _defuses;
+    readonly double[] _maxRatings;
     readonly double[] _ratings;
 
     public LeaderboardData(List<LeaderboardPlayer> players, string mode, DateTime fetchedAt)
@@ -174,6 +178,10 @@ public sealed class LeaderboardData
         _kds = Players.Select(p => p.Metrics.Kd).OrderByDescending(x => x).ToArray();
         _adrs = Players.Select(p => p.Metrics.Adr).OrderByDescending(x => x).ToArray();
         _hsRates = Players.Select(p => p.Metrics.HsRate).OrderByDescending(x => x).ToArray();
+        _kasts = Players.Select(p => p.Metrics.Kast).OrderByDescending(x => x).ToArray();
+        _plants = Players.Select(p => p.Metrics.Plants).OrderByDescending(x => x).ToArray();
+        _defuses = Players.Select(p => p.Metrics.Defuses).OrderByDescending(x => x).ToArray();
+        _maxRatings = Players.Select(p => p.Metrics.MaxRating).OrderByDescending(x => x).ToArray();
 
         if (mode == "counterember")
         {
@@ -181,7 +189,7 @@ public sealed class LeaderboardData
         }
         else
         {
-            _ratings = Players.Select(p => BedwarsRatingCalculator.Calculate(p.Matches, p.WinRate, p.Metrics.Fkdr, p.Metrics.AvgBeds) ?? 0.0)
+            _ratings = Players.Select(p => BedwarsRatingCalculator.Calculate(p.Matches, p.Wins, p.Metrics.Fkdr, p.Metrics.Kd) ?? 0.0)
                 .OrderByDescending(x => x).ToArray();
         }
     }
@@ -197,6 +205,10 @@ public sealed class LeaderboardData
     public int? GetRankKD(double val) => val <= 0 ? null : CalculateRank(_kds, val);
     public int? GetRankAdr(double val) => val <= 0 ? null : CalculateRank(_adrs, val);
     public int? GetRankHsRate(double val) => val <= 0 ? null : CalculateRank(_hsRates, val);
+    public int? GetRankKast(double val) => val <= 0 ? null : CalculateRank(_kasts, val);
+    public int? GetRankPlants(long val) => val <= 0 ? null : CalculateRank(_plants, val);
+    public int? GetRankDefuses(long val) => val <= 0 ? null : CalculateRank(_defuses, val);
+    public int? GetRankMaxRating(double val) => val <= 0 ? null : CalculateRank(_maxRatings, val);
     public int? GetRankRating(double? val) => val is null or <= 0 ? null : CalculateRank(_ratings, val.Value);
 
     static int? CalculateRank<T>(T[] sortedDesc, T value) where T : IComparable<T>

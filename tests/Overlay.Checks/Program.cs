@@ -20,8 +20,17 @@ internal static class Program
     static void Main(string[] args)
     {
         if (args.Length == 2 && args[0] == "--screenshot") { CaptureScreenshot(args[1]); return; }
+        if (args.Length == 2 && args[0] == "--ce-details") { CaptureCounterEmberDetails(args[1]); return; }
         if (args.Length == 2 && args[0] == "--card") { RenderCardSample(args[1]); return; }
         if (args.Length == 1 && args[0] == "--live") { CheckLiveAsync().GetAwaiter().GetResult(); return; }
+        if (args.Length == 1 && args[0] == "--log-source")
+        {
+            var source = MinecraftLogWatcher.FindActiveClientLog();
+            Console.WriteLine(source is null
+                ? "No active Minecraft client log was identified."
+                : $"{(source.ConfirmedByOpenHandle ? "Confirmed from an open Java file handle" : "Inferred from the Java game directory")}: {source.Path}");
+            return;
+        }
         CheckRating();
         CheckLeaderboard();
         CheckCardRenderer();
@@ -114,6 +123,63 @@ internal static class Program
         Console.WriteLine("Saved stats card sample to: " + outputPath);
     }
 
+    static void CaptureCounterEmberDetails(string outputPath)
+    {
+        var player = new PlayerRow
+        {
+            Username = "Example_CE",
+            Uuid = "7ba72be0-3a2e-4bba-9d32-6c79458e681a",
+            State = "ok",
+            GameMode = "counterember",
+            Matches = 120,
+            Wins = 73,
+            MVPs = 14,
+            WinRate = .608,
+            Rating = 1.63,
+            MaxRating = 1.91,
+            KD = 1.48,
+            Kast = .72,
+            Adr = 96.4,
+            HsRate = .38,
+            Kills = 860,
+            Plants = 38,
+            Defuses = 21,
+            RatingTrend = [1.15, 1.21, 1.19, 1.34, 1.27, 1.48, 1.44, 1.63]
+        };
+        player.RecentMatches = Enumerable.Range(0, 6).Select(i => new ApiRecentMatch
+        {
+            MatchId = $"match-{i + 1}",
+            Mode = "COUNTEREMBER_BOMB_DEFUSAL",
+            Map = i % 2 == 0 ? "Foundry" : "Ruins",
+            Team = i % 2 == 0 ? "RED" : "BLUE",
+            Won = i % 3 != 0,
+            Mvp = i == 1,
+            Winner = "RED",
+            Teams = [new ApiTeamScore { Id = "RED", Score = 13 }, new ApiTeamScore { Id = "BLUE", Score = 9 }],
+            EndedAt = DateTimeOffset.Now.AddHours(-i * 4),
+            Counted = true,
+            Stats = new ApiRecentStats { Kills = 18 - i, Deaths = 9 + i, Assists = 6, Headshots = 8, Damage = 1450, Plants = 1, Defuses = 2, KastRounds = 17, RoundsPlayed = 25, RatingQualified = 20, MvpEligible = 1 },
+            Metrics = new ApiRecentMetrics { Rating = 1.45 + i * .03, MaxRating = 1.52, Kd = 1.7, Adr = 90.3, Kast = .72, HsRate = .41, Kills = 18 - i }
+        }).ToList();
+        var window = new CounterEmberDetailsWindow(player)
+        {
+            Left = -4000,
+            Top = -4000,
+            ShowActivated = false,
+            WindowStartupLocation = WindowStartupLocation.Manual
+        };
+        window.Show();
+        window.UpdateLayout();
+        PumpFor(100);
+        var bitmap = new RenderTargetBitmap(1040, 780, 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(window);
+        var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
+        using (var file = File.Create(outputPath)) encoder.Save(file);
+        window.Close();
+        Console.WriteLine("Saved CounterEmber details preview.");
+    }
+
     static void CheckCardRenderer()
     {
         var dummyBg = BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null, new byte[4], 4);
@@ -151,9 +217,15 @@ internal static class Program
         var api = new StatsApiClient();
         var bw = await api.FetchAsync("NewbieL1314", "bedwars", CancellationToken.None);
         var ce = await api.FetchAsync("player_ypm", "counterember", CancellationToken.None);
+        var newestCeMatch = ce.RecentMatches.Where(match => match.EndedAt.HasValue).MaxBy(match => match.EndedAt);
         Check(bw.State == "ok" && bw.Matches > 0 && bw.OverallRating.HasValue, "live BW query failed");
-        Check(ce.State == "ok" && ce.Matches > 0 && ce.Rating > 0, "live CounterEmber query failed");
-        Console.WriteLine("Live BedWars and CounterEmber queries passed.");
+        Check(ce.State == "ok" && ce.Matches > 0 && ce.Rating > 0 && ce.Uuid.Length > 0
+            && ce.Kast > 0 && ce.Adr > 0 && ce.KD > 0 && ce.MaxRating > 0
+            && ce.RatingTrend.Length == 30 && ce.RecentMatches.Count == 15
+            && newestCeMatch?.Metrics.Rating is double latestRating
+            && Math.Abs(ce.RatingTrend[^1] - latestRating) < 0.000001,
+            "live CounterEmber summary, trend or recent match data is missing");
+        Console.WriteLine("Live BedWars and full CounterEmber query data passed.");
     }
 
     static void CaptureScreenshot(string output)
@@ -226,6 +298,15 @@ internal static class Program
         Check(lb.GetRankFkdr(0) == null, "0 FKDR must have no rank");
         Check(lb.GetRankFkdr(5) == null, "FKDR worse than all players must return null (#-)");
 
+        var ceLeaderboard = new LeaderboardData(
+        [
+            new LeaderboardPlayer { Name = "CE1", Matches = 20, Metrics = new ApiMetrics { Rating = 2.1, Kast = .8, Plants = 12, Defuses = 4, MaxRating = 2.3 } },
+            new LeaderboardPlayer { Name = "CE2", Matches = 10, Metrics = new ApiMetrics { Rating = 1.5, Kast = .7, Plants = 8, Defuses = 2, MaxRating = 1.8 } }
+        ], "counterember", DateTime.UtcNow);
+        Check(ceLeaderboard.GetRankKast(.8) == 1 && ceLeaderboard.GetRankPlants(8) == 2
+            && ceLeaderboard.GetRankDefuses(2) == 2 && ceLeaderboard.GetRankMaxRating(1.8) == 2,
+            "CounterEmber leaderboard ranks must cover KAST, plants, defuses and max Rating");
+
         // 3. PlayerRow application checks
         var row = new PlayerRow { State = "ok", Username = "TestPlayer", Matches = 20, WinRate = 0.85, Fkdr = 20, MVPs = 10, BedsBroken = 15, FinalKills = 30, Kills = 100 };
         row.ApplyLeaderboard(lb);
@@ -262,27 +343,53 @@ internal static class Program
 
     static void CheckRating()
     {
-        var small = BedwarsRatingCalculator.Calculate(1, 1, 5, 2)!.Value;
-        var large = BedwarsRatingCalculator.Calculate(100, 1, 5, 2)!.Value;
-        Check(small > 1 && small < large, "low sample confidence must reduce rating");
-        Check(BedwarsRatingCalculator.Calculate(0, 1, 5, 2) is null, "zero games should not have a rating");
-        Check(BedwarsRatingCalculator.Calculate(20, double.NaN, 1, 0.5) is null, "invalid values should not produce a rating");
-        var a = new PlayerRow { State = "ok", Matches = 20, WinRate = .5, Fkdr = 1, AvgBeds = .5, BedsBroken = 10 };
-        var b = new PlayerRow { State = "ok", Matches = 20, WinRate = .5, Fkdr = 1, AvgBeds = .5, BedsBroken = 1000 };
-        Check(a.OverallRating == b.OverallRating, "total beds must not inflate rating");
-        Check(new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.77 }.OverallRating == 1.77, "CE rating must stay official");
-        var ordinary = new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.11 };
-        var warning = new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.12 };
-        var high = new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.35 };
-        var rounded = new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.346 };
-        var roundedDown = new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.344 };
+        var sampleRating = BedwarsRatingCalculator.Calculate(100, 60, 3, 2)!.Value;
+        Check(Math.Abs(sampleRating - 1.64046894) < 0.000001, "rating should follow the new weighted log formula");
+        var lowerConfidence = BedwarsRatingCalculator.Calculate(1, 1, 3, 2)!.Value;
+        var higherConfidence = BedwarsRatingCalculator.Calculate(100, 60, 3, 2)!.Value;
+        Check(lowerConfidence < higherConfidence, "sample confidence should reduce low-sample performance influence");
+        var baseline = BedwarsRatingCalculator.Calculate(20, 10, 1, 1)!.Value;
+        Check(baseline > 1.0, "the experience bonus should place a neutral 20-game sample slightly above 1.00");
+        Check(BedwarsRatingCalculator.Calculate(0, 0, 1, 1) is null, "zero games should not have a rating");
+        Check(BedwarsRatingCalculator.Calculate(20, 21, 1, 1) is null, "wins cannot exceed matches");
+        Check(BedwarsRatingCalculator.Calculate(20, 10, double.NaN, 1) is null, "invalid ratios should not produce a rating");
+        Check(BedwarsRatingCalculator.Calculate(20, 10, -1, 1) is null, "negative ratios should not produce a rating");
+        Check(BedwarsRatingCalculator.Calculate(1, 0, double.MaxValue, double.MaxValue) == 3.0,
+            "extreme valid ratios should be capped at the maximum rating");
+
+        var a = new PlayerRow { State = "ok", Matches = 20, Wins = 10, WinRate = .5, Fkdr = 1, KD = 1, AvgBeds = .5, BedsBroken = 10 };
+        var b = new PlayerRow { State = "ok", Matches = 20, Wins = 10, WinRate = .5, Fkdr = 1, KD = 1, AvgBeds = 100, BedsBroken = 1000 };
+        Check(a.OverallRating == b.OverallRating, "average and total beds must not affect rating");
+        var differentWinRate = new PlayerRow { State = "ok", Matches = 20, Wins = 15, WinRate = .25, Fkdr = 1, KD = 1 };
+        Check(differentWinRate.OverallRating > a.OverallRating, "WLR should use wins and losses rather than the API winRate field");
+        var lowSampleCe = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.77 };
+        Check(lowSampleCe.OverallRating == 1.77 && lowSampleCe.RatingLabel == "1.77*"
+            && lowSampleCe.RatingInfo.Contains("少于 10 场", StringComparison.Ordinal),
+            "low-sample CE Rating must remain official and carry the sample warning");
+        var lowSampleBw = new PlayerRow { State = "ok", GameMode = "bedwars", Matches = 1, Wins = 1, WinRate = .6, Fkdr = 2, KD = 2, AvgBeds = 1 };
+        var establishedBw = new PlayerRow { State = "ok", GameMode = "bedwars", Matches = 10, Wins = 6, WinRate = .6, Fkdr = 2, KD = 2, AvgBeds = 1 };
+        Check(lowSampleBw.RatingLabel.EndsWith('*') && !establishedBw.RatingLabel.EndsWith('*'),
+            "BedWars Rating must show the sample marker only below ten matches");
+        var noGamesCe = new PlayerRow { State = "ok", GameMode = "counterember", Rating = 1.77, MaxRating = 1.91 };
+        Check(noGamesCe.OverallRating is null && noGamesCe.RatingLabel == "—" && noGamesCe.MaxRatingLabel == "—",
+            "CE players with no matches must not display current or max Rating");
+        var formatStats = typeof(MainWindow).GetMethod("FormatStats", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var noGamesText = (string)formatStats.Invoke(null, [noGamesCe])!;
+        Check(noGamesText.Contains("Rating: — (最高 —)", StringComparison.Ordinal),
+            "copied CE stats must not show a rating when there are no matches");
+        var ordinary = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.11 };
+        var warning = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.12 };
+        var high = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.35 };
+        var rounded = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.346 };
+        var roundedDown = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.344 };
         Check(!ordinary.IsHighRating && !ordinary.IsWarningRating && ordinary.ThreatLabel == "普通", "1.11 must be ordinary");
         Check(!warning.IsHighRating && warning.IsWarningRating && warning.ThreatLabel == "危险", "1.12 must be warning");
         Check(high.IsHighRating && !high.IsWarningRating && high.ThreatLabel == "极危", "1.35 must be high");
-        Check(rounded.RatingLabel == "1.35" && rounded.IsHighRating && rounded.ThreatLabel == "极危", "highlight and label must follow displayed rounding");
-        Check(roundedDown.RatingLabel == "1.34" && roundedDown.IsWarningRating, "1.34 must remain warning");
+        Check(rounded.RatingLabel == "1.35*" && rounded.IsHighRating && rounded.ThreatLabel == "极危", "highlight and label must follow displayed rounding");
+        Check(roundedDown.RatingLabel == "1.34*" && roundedDown.IsWarningRating, "1.34 must remain warning");
         Check(!new PlayerRow { State = "loading", GameMode = "counterember", Rating = 3 }.IsHighRating, "loading players must not be highlighted");
-        Check(!a.IsHighRating && b.OverallRating == 1.0, "neutral BW rating must not be highlighted");
+        Check(!a.IsHighRating && !a.IsWarningRating && b.OverallRating > 1.0 && b.OverallRating < 1.12,
+            "neutral BW rating must include the experience bonus and remain unhighlighted");
     }
 
     static void CheckLogs()
@@ -313,20 +420,52 @@ internal static class Program
             Check(MinecraftLogWatcher.NormalizeDevicePath(@"\\?\D:\games\minecraft\logs\latest.log") == @"D:\games\minecraft\logs\latest.log", "device path prefix must be normalized");
             Check(MinecraftLogWatcher.NormalizeDevicePath(@"\\?\UNC\server\share\latest.log") == @"\\server\share\latest.log", "UNC device path must be normalized");
 
-            // Active process log discovery check
-            var activeLogs = MinecraftLogWatcher.FindActiveProcessLogs();
-            foreach (var l in activeLogs)
+            // Prefer the game's main log over BLC's separate chat log.
+            var sameClient = new[]
             {
-                Check(l.EndsWith("latest.log", StringComparison.OrdinalIgnoreCase), $"discovered log must end with latest.log: {l}");
-                Check(File.Exists(l), $"discovered log file must exist: {l}");
+                new LogCandidate(@"D:\instance\logs\blclient\chat\latest.log", 10, true, false, DateTime.UtcNow),
+                new LogCandidate(@"D:\instance\logs\blclient\minecraft\latest.log", 10, true, false, DateTime.UtcNow.AddMinutes(-1))
+            };
+            Check(MinecraftLogWatcher.ChooseBestCandidate(sameClient)?.Path.EndsWith(
+                @"logs\blclient\minecraft\latest.log", StringComparison.OrdinalIgnoreCase) == true,
+                "the Minecraft log must be preferred over the BLC chat-only log");
+
+            var gameDirectory = Path.Combine(Path.GetTempPath(), "imc-overlay-game-dir-" + Guid.NewGuid().ToString("N"));
+            var gameLog = Path.Combine(gameDirectory, "logs", "blclient", "minecraft", "latest.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(gameLog)!);
+            File.WriteAllText(gameLog, "game log");
+            try
+            {
+                var gameLogs = MinecraftLogWatcher.FindGameDirectoryLogs(gameDirectory).ToArray();
+                Check(gameLogs.Length == 1 && string.Equals(gameLogs[0], gameLog, StringComparison.OrdinalIgnoreCase),
+                    "fallback discovery must stay inside the Java process game directory");
+                Check(!MinecraftLogWatcher.FindGameDirectoryLogs(null).Any(),
+                    "fallback discovery must not guess a global or stale log when the game directory is unknown");
             }
+            finally { Directory.Delete(gameDirectory, true); }
+
+            // Prefer a foreground client when more than one Java game is open.
+            var multipleClients = new[]
+            {
+                new LogCandidate(@"C:\old\logs\latest.log", 11, true, false, DateTime.UtcNow),
+                new LogCandidate(@"D:\active\logs\latest.log", 12, false, true, DateTime.UtcNow.AddHours(-1))
+            };
+            Check(MinecraftLogWatcher.ChooseBestCandidate(multipleClients)?.ProcessId == 12,
+                "the foreground Java client must win over a different, more recently written client");
+
+            var commandLine = @"javaw net.minecraft.client.main.Main --gameDir ""C:\Games\Bed Wars"" --accessToken never-display-this";
+            Check(MinecraftLogWatcher.IsMinecraftClientCommandLine(commandLine, out var gameDir)
+                && gameDir == @"C:\Games\Bed Wars", "client command line should yield only the game directory");
+            Check(!MinecraftLogWatcher.IsMinecraftClientCommandLine(
+                @"java -jar server.jar --nogui", out _), "a Minecraft server process must not be mistaken for a client");
 
             // Verify active log path event
-            string? detected = null;
-            using var activeWatcher = new MinecraftLogWatcher(_ => { }, true);
-            activeWatcher.ActiveLogDetected += p => detected = p;
-            activeWatcher.ReadNewLines(path, CancellationToken.None);
-            Check(detected == path, "active log path must be updated on new lines");
+            var detected = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var activeWatcher = new MinecraftLogWatcher(_ => { }, true, () => [path], TimeSpan.FromMilliseconds(20));
+            activeWatcher.ActiveLogDetected += source => { if (source is not null) detected.TrySetResult(source.Path); };
+            activeWatcher.Start();
+            Check(detected.Task.Wait(TimeSpan.FromSeconds(5)) && detected.Task.Result == path,
+                "active log path must be published when discovery selects it");
         }
         finally { File.Delete(path); }
     }
@@ -385,6 +524,54 @@ internal static class Program
         var waiting = new StatsApiClient(new HttpClient(new FakeHandler((_, _) => { var r = new HttpResponseMessage(HttpStatusCode.TooManyRequests); r.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromHours(1)); retrySeen.SetResult(); return Task.FromResult(r); })));
         using var cancelDelay = new CancellationTokenSource(); var delayed = waiting.FetchAsync("Alice", "bedwars", cancelDelay.Token); await retrySeen.Task; await Task.Delay(100); cancelDelay.Cancel();
         try { await delayed; throw new Exception("retry delay ignored cancellation"); } catch (OperationCanceledException) { }
+
+        const string ceJson = """
+        {
+          "summary": { "uuid": "uuid-ce", "name": "CEPlayer", "matches": 15, "wins": 8, "mvps": 2, "winRate": 0.533,
+            "metrics": { "rating": 1.23, "kast": 0.65, "adr": 88.8, "kd": 1.5, "hsRate": 0.42, "kills": 120, "plants": 5, "defuses": 3, "maxRating": 1.61 } },
+          "trend": [1.01, 1.10, 1.23],
+          "recent": [{ "matchId": "match-1", "mode": "COUNTEREMBER_BOMB_DEFUSAL", "map": "Foundry", "team": "RED", "won": true, "mvp": false,
+            "winner": "RED", "teams": [{ "id": "RED", "score": 13 }, { "id": "BLUE", "score": 9 }], "endedAt": "2026-10-31T12:30:00Z", "counted": true,
+            "stats": { "kills": 8, "damage": 640, "deaths": 4, "defuses": 2, "headshots": 3, "kastRounds": 20, "plants": 1, "rating": 1.18, "assists": 5, "mvpEligible": 1, "roundsPlayed": 30, "ratingQualified": 24 },
+            "metrics": { "adr": 90, "defuses": 2, "hsRate": 0.33, "kast": 0.7, "kd": 2, "kills": 8, "maxRating": 1.25, "plants": 1, "rating": 1.18 } }]
+        }
+        """;
+        var ceClient = new StatsApiClient(new HttpClient(new FakeHandler((_, _) => Task.FromResult(OkJson(ceJson)))));
+        var ce = await ceClient.FetchAsync("CEPlayer", "counterember", CancellationToken.None);
+        var match = ce.RecentMatches.Single();
+        Check(ce.State == "ok" && ce.Uuid == "uuid-ce" && ce.Username == "CEPlayer" && ce.Matches == 15
+            && ce.Wins == 8 && ce.MVPs == 2 && ce.WinRate == .533 && ce.Rating == 1.23
+            && ce.Kast == .65 && ce.Adr == 88.8 && ce.KD == 1.5 && ce.HsRate == .42
+            && ce.Kills == 120 && ce.Plants == 5 && ce.Defuses == 3 && ce.MaxRating == 1.61,
+            "CounterEmber summary metrics must all be parsed");
+        var stats = match.Stats;
+        var metrics = match.Metrics;
+        Check(ce.RatingTrend.SequenceEqual(new[] { 1.01, 1.10, 1.23 }) && match.MatchId == "match-1"
+            && match.Mode == "COUNTEREMBER_BOMB_DEFUSAL" && match.Map == "Foundry" && match.Team == "RED"
+            && match.Won == true && match.Mvp == false && match.Winner == "RED" && match.EndedAt.HasValue && match.Counted == true
+            && match.Teams.Count == 2 && match.Teams[0].Id == "RED" && match.Teams[0].Score == 13 && match.Teams[1].Score == 9,
+            "CounterEmber rating trend and recent match details must all be parsed");
+        Check(stats.Kills == 8 && stats.Damage == 640 && stats.Deaths == 4 && stats.Plants == 1
+            && stats.Rating == 1.18 && stats.Assists == 5 && stats.Defuses == 2 && stats.Headshots == 3
+            && stats.KastRounds == 20 && stats.MvpEligible == 1 && stats.RoundsPlayed == 30 && stats.RatingQualified == 24,
+            "CounterEmber per-match stats fields must all be parsed");
+        Check(metrics.Rating == 1.18 && metrics.Kast == .7 && metrics.Adr == 90 && metrics.Kd == 2
+            && metrics.HsRate == .33 && metrics.Kills == 8 && metrics.Plants == 1 && metrics.Defuses == 2
+            && metrics.MaxRating == 1.25,
+            "CounterEmber per-match metrics fields must all be parsed");
+
+        var lbCalls = 0;
+        var lbClient = new StatsApiClient(new HttpClient(new FakeHandler((_, _) =>
+        {
+            lbCalls++;
+            return Task.FromResult(lbCalls == 1
+                ? OkJson("""{"players":[{"name":"CEPlayer","matches":15,"wins":8,"mvps":2,"winRate":0.533,"metrics":{"rating":1.23,"kast":0.65,"adr":88.8,"kd":1.5,"hsRate":0.42,"kills":120,"plants":5,"defuses":3,"maxRating":1.61}}]}""")
+                : new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        })));
+        var freshLb = await lbClient.GetLeaderboardWithStatusAsync("counterember", force: true);
+        var cachedLb = await lbClient.GetLeaderboardWithStatusAsync("counterember", force: true);
+        Check(freshLb.IsFresh && !cachedLb.IsFresh && cachedLb.Data.Players.Count == 1,
+            "leaderboard refresh status must distinguish a new response from stale cache fallback");
     }
 
     static void CheckStaleRosterRequest(bool switchMode)
@@ -392,16 +579,25 @@ internal static class Program
         SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
         var replies = new ConcurrentQueue<TaskCompletionSource<HttpResponseMessage>>();
         var handler = new FakeHandler((_, _) => { var reply = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously); replies.Enqueue(reply); return reply.Task; });
-        var window = new MainWindow(new StatsApiClient(new HttpClient(handler)), false);
-        var cache = (ConcurrentDictionary<string, ImageSource>)typeof(MainWindow).GetField("AvatarCache", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
-        var avatar = BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null, new byte[4], 4); avatar.Freeze(); cache["Alice"] = avatar;
+        var fakeImages = new FakeOverlayImages();
+        var avatar = BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null, new byte[4], 4); avatar.Freeze();
+        fakeImages.SetAvatar("Alice", avatar);
+        var window = new MainWindow(new StatsApiClient(new HttpClient(handler)), false, fakeImages);
         var methods = BindingFlags.Instance | BindingFlags.NonPublic;
         typeof(MainWindow).GetMethod("ApplyMode", methods)!.Invoke(window, ["bedwars", false]);
         var setRoster = typeof(MainWindow).GetMethod("SetRoster", methods)!;
         setRoster.Invoke(window, [new[] { "Alice" }]);
         var rows = (System.Collections.ObjectModel.ObservableCollection<PlayerRow>)typeof(MainWindow).GetField("Players", methods)!.GetValue(window)!;
         var old = rows[0]; PumpUntil(() => replies.Count >= 1);
-        if (switchMode) typeof(MainWindow).GetMethod("ApplyMode", methods)!.Invoke(window, ["counterember", true]);
+        if (switchMode)
+        {
+            typeof(MainWindow).GetField("_lbSortKey", methods)!.SetValue(window, "Kast");
+            typeof(MainWindow).GetField("_lbSortDescending", methods)!.SetValue(window, false);
+            typeof(MainWindow).GetMethod("ApplyMode", methods)!.Invoke(window, ["counterember", true]);
+            Check((string)typeof(MainWindow).GetField("_lbSortKey", methods)!.GetValue(window)! == "Rating"
+                && (bool)typeof(MainWindow).GetField("_lbSortDescending", methods)!.GetValue(window)!,
+                "switching game mode must reset the leaderboard category and sort direction");
+        }
         else setRoster.Invoke(window, [new[] { "Alice" }]);
         PumpUntil(() => replies.Count >= 2);
         replies.TryDequeue(out var first); replies.TryDequeue(out var second);
@@ -421,6 +617,15 @@ internal static class Program
         timer.Tick += (_, _) => { timer.Stop(); frame.Continue = false; }; timer.Start(); Dispatcher.PushFrame(frame);
     }
     static HttpResponseMessage Ok(int matches) => new(HttpStatusCode.OK) { Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(new { summary = new { name = "Alice", matches, wins = 1, winRate = 0.5, metrics = new { fkdr = 1, avgBeds = 0.5 } } }), Encoding.UTF8, "application/json") };
+    static HttpResponseMessage OkJson(string json) => new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+    sealed class FakeOverlayImages : IOverlayImages
+    {
+        readonly Dictionary<string, ImageSource> _avatars = new(StringComparer.OrdinalIgnoreCase);
+        public void SetAvatar(string name, ImageSource avatar) => _avatars[name] = avatar;
+        public bool TryGetAvatar(string playerName, out ImageSource? avatar) => _avatars.TryGetValue(playerName, out avatar);
+        public Task<ImageSource?> GetAvatarAsync(string playerName) => Task.FromResult(_avatars.GetValueOrDefault(playerName));
+        public Task<BitmapSource> GetOfficialWallpaperAsync() => Task.FromResult(BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null, new byte[4], 4));
+    }
     sealed class FakeHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handle) : HttpMessageHandler
     { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => handle(request, cancellationToken); }
 }

@@ -6,6 +6,12 @@
 
 *截图使用虚构玩家和示例数据。*
 
+CounterEmber 查询还可打开 Rating 趋势和近期比赛明细：
+
+![CounterEmber 近期比赛与 Rating 趋势](docs/images/counterember-details.png)
+
+*查询明细截图使用虚构玩家和示例数据。*
+
 ## 使用
 
 1. 从 Releases 下载 Windows x64 发布包并解压，运行 `IMCBedwarsOverlay-CSharp.exe`。
@@ -24,31 +30,41 @@
 
 ### 起床战争估算 Rating
 
-起床战争 Rating 是本项目的启发式估算，**不是 IMC.RE 的官方评分**。它以 1.00 为中性基准，结合 FKDR、胜率和场均拆床，再根据场次降低低样本的影响。计算方式大致如下：
+起床战争 Rating 是本项目的启发式估算，**不是 IMC.RE 的官方评分**。它综合 FKDR、胜负比和 K/D，并对少量对局做样本量收缩。计算方式如下：
 
-令 `n` 为对局数、`w` 为胜率（如 60% 记为 0.6）、`f` 为 FKDR、`b` 为场均拆床数。用 `C(x, a, b)` 表示将 `x` 限制在 `a` 到 `b` 之间：
+令 `n` 为对局数、`w` 为胜场数、`l = n - w` 为负场数、`f` 为 FKDR、`k` 为 K/D。FKDR 和 K/D 使用 IMC.RE 接口返回的比率；胜负比由胜场和负场计算。各比率的分母使用至少为 1 的平滑值：
+
+$$
+\mathrm{WLR} = \frac{w}{\max(1,l)}, \qquad
+\mathrm{FKDR} = \frac{\text{final kills}}{\max(1,\text{final deaths})}, \qquad
+\mathrm{KDR} = \frac{\text{kills}}{\max(1,\text{deaths})}.
+$$
 
 $$
 \begin{aligned}
-W &= C(2(w-0.5), -1, 1), \\
-F &= C\left(\log_2\left(\frac{\max(0,f)+1}{2}\right), -1, 2\right), \\
-B &= C\left(\frac{b-0.5}{0.5}, -1, 2\right).
+R_{\mathrm{FKDR}} &= 0.20 + 0.80\log_2(f+1), \\
+R_{\mathrm{WLR}} &= 0.20 + 0.80\log_2(\mathrm{WLR}+1), \\
+R_{\mathrm{KDR}} &= 0.25 + 0.75\log_2(\mathrm{KDR}+1), \\
+\mathrm{Perf} &= 0.45R_{\mathrm{FKDR}} + 0.35R_{\mathrm{WLR}} + 0.20R_{\mathrm{KDR}}, \\
+\mathrm{Conf}(n) &= \frac{n}{n+20}.
 \end{aligned}
 $$
 
 $$
-R = C\left(
-1 + \frac{n}{n+20}\left(0.45F + 0.35W + 0.20B\right), 0.25, 2.50
-\right).
+\mathrm{Rating}_{\mathrm{BW}} = \min\left(\max\left(
+1 + \mathrm{Conf}(n)(\mathrm{Perf}-1)\times1.25 + 0.04\log_{10}(n+1),
+0.10\right), 3.00\right).
 $$
 
-其中 `R` 就是最终显示的 Rating。
+其中 `Conf(n)` 会降低低场次的表现影响；`0.04 log_{10}(n+1)` 是较小的经验场次加成。最终 Rating 限制在 0.10 到 3.00 之间。累计拆床数不直接提高评分。
 
 少于 10 场时数字后显示 `*`，提示样本不足；无对局时不显示评分。威胁标签按显示到小数点后两位的估算值分级：1.35 及以上为「极危」、1.12 至 1.34 为「危险」，其他为「普通」。累计拆床数不直接提高评分。
 
 表格按显示到小数点后两位的有效 Rating 给玩家整行着色：1.35 及以上为红色，1.12 至 1.34 为黄色，低于 1.12 或没有有效评分时保持普通背景。该着色规则同样适用于 CounterEmber 的官方 Rating；跨模式的评分不可直接比较。
 
 评分仅用于快速参考，权重和分级尚未依据服务器玩家数据校准，不能代表真实水平或判定玩家身份。
+
+日志句柄枚举使用 Windows 的 `NtQueryInformationProcess` 内部接口。微软说明该接口可能随 Windows 版本变化，因此程序在接口不可用或权限不足时会退回到游戏目录推测。[API 文档](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess)。
 
 ## 构建
 
@@ -58,7 +74,9 @@ $$
 dotnet publish .\IMCBedwarsOverlay.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o .\publish
 ```
 
-配置存放在 `%APPDATA%\IMCBedwarsOverlay\config.json`。程序支持通过运行中的 `java.exe`/`javaw.exe` 进程句柄实时定位当前客户端正在写入的 `latest.log`（兼容 Badlion Client / BLC、Lunar、Feather、自定义客户端路径等），并在「设置」中展示当前识别的日志路径。未检测到客户端进程时会自动回退至常见启动器默认路径；如自动扫描未识别，可使用「查询玩家」。
+配置存放在 `%APPDATA%\IMCBedwarsOverlay\config.json`。程序会筛选运行中的 Minecraft `java.exe`/`javaw.exe` 客户端，优先从其正在写入的文件句柄定位 `latest.log`，支持 Badlion Client / BLC、Lunar、Feather 和自定义游戏目录。BLC 同时打开聊天日志和游戏日志时，会优先选择 `minecraft` 主日志；多个客户端同时运行时优先选择前台游戏。若 Windows 不允许读取进程句柄，只会按该 Java 进程自己的 `--gameDir` 推测日志位置；没有可确认的游戏目录时，不会回退到其他启动器或旧日志。
+
+CounterEmber 查询会显示接口提供的胜率、胜场、MVP、Rating、最高 Rating、K/D、KAST、ADR、爆头率、击杀、下包和拆包数据。查询窗口还提供近 30 场 Rating 趋势与最近 15 场比赛明细，包括地图、模式、队伍、比分、结果及逐场数据。
 
 回归检查：
 

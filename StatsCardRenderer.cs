@@ -62,8 +62,7 @@ internal static class StatsCardRenderer
             double nameWidth = nameFormatted.Width;
 
             // Rating next to username
-            double? ratingVal = player.OverallRating;
-            string ratingStr = ratingVal.HasValue ? ratingVal.Value.ToString("F2") : "—";
+            string ratingStr = player.RatingLabel;
             string ratingColor = player.IsHighRating ? "#FB7185" : player.IsWarningRating ? "#FBBF24" : "#38BDF8";
 
             double ratingX = 180 + nameWidth + 24;
@@ -101,9 +100,13 @@ internal static class StatsCardRenderer
                     ("胜场", player.Wins.ToString(), "#F1F5F9", player.WinsRank),
                     ("K/D", player.KD.ToString("F2"), "#FB7185", player.KDRank),
                     ("MVP", player.MVPs.ToString(), "#FBBF24", player.MVPRank),
+                    ("KAST", player.Kast.ToString("P1"), "#A78BFA", player.KastRank),
                     ("ADR", player.Adr.ToString("F1"), "#38BDF8", player.AdrRank),
                     ("爆头率", player.HsRate.ToString("P1"), "#FB923C", player.HsRateRank),
                     ("击杀", player.Kills.ToString(), "#F1F5F9", player.KillsRank),
+                    ("下包", player.Plants.ToString(), "#F472B6", player.PlantsRank),
+                    ("拆包", player.Defuses.ToString(), "#60A5FA", player.DefusesRank),
+                    ("最高 Rating", player.Matches > 0 ? player.MaxRating.ToString("F2") : "—", "#FACC15", player.MaxRatingRank),
                     ("比赛场次", player.Matches.ToString(), "#F1F5F9", player.MatchesRank)
                 }
                 : new (string Label, string Value, string Color, StatRankInfo Rank)[]
@@ -119,44 +122,46 @@ internal static class StatsCardRenderer
                 };
 
             const double cardW = 272; // (1136 - 16 * 3) / 4 = 1088 / 4 = 272 exactly!
-            const double cardH = 170;
-            const double row1Y = headerY + headerH + gap; // 44 + 142 + 16 = 202
-            const double row2Y = row1Y + cardH + gap;     // 202 + 170 + 16 = 388
+            double cardH = player.GameMode == "counterember" ? 115 : 170;
+            double row1Y = headerY + headerH + gap;
+            double row2Y = row1Y + cardH + gap;
+            double row3Y = row2Y + cardH + gap;
+            bool hasThirdRow = stats.Length > 8;
+            double footerY = (hasThirdRow ? row3Y : row2Y) + cardH + gap;
+            double footerH = hasThirdRow ? 66 : 92;
 
             for (int i = 0; i < stats.Length; i++)
             {
                 int col = i % 4;
                 int row = i / 4;
                 double x = marginX + col * (cardW + gap);
-                double y = row == 0 ? row1Y : row2Y;
+                double y = row switch { 0 => row1Y, 1 => row2Y, _ => row3Y };
 
                 // Card background and border
                 dc.DrawRoundedRectangle(Brush("#D2142233"), new Pen(Brush("#5058728A"), 1), new Rect(x, y, cardW, cardH), 14, 14);
 
                 // Label
-                Text(dc, stats[i].Label, x + 24, y + 20, 19, "#94A3B8", true, cardW - 48);
+                Text(dc, stats[i].Label, x + 24, y + 14, 17, "#94A3B8", true, cardW - 48);
 
                 // Value (large, bold)
-                var valFormatted = new FormattedText(stats[i].Value, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Bold, 42, Brush(stats[i].Color), 1.0)
+                var valFormatted = new FormattedText(stats[i].Value, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Bold, hasThirdRow ? 32 : 42, Brush(stats[i].Color), 1.0)
                 { MaxTextWidth = cardW - 48, MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis };
-                dc.DrawText(valFormatted, new Point(x + 24, y + 56));
+                dc.DrawText(valFormatted, new Point(x + 24, y + 40));
 
                 // Individual metric rank info (NO BOX FRAME - clean colored text directly under value)
                 var rank = stats[i].Rank;
                 string rankTag = string.IsNullOrEmpty(rank.Tag) ? "#-" : rank.Tag;
                 string rankColor = RankVisuals.GetRankColorHex(rank.Rank);
-                Text(dc, "全服 " + rankTag, x + 24, y + 120, 16, rankColor, true, cardW - 48);
+                Text(dc, "全服 " + rankTag, x + 24, y + (hasThirdRow ? 82 : 112), hasThirdRow ? 13 : 16, rankColor, true, cardW - 48);
             }
 
             // ================= FOOTER CONTAINER =================
-            const double footerY = row2Y + cardH + gap; // 388 + 170 + 16 = 574
-            const double footerH = 92;
             dc.DrawRoundedRectangle(Brush("#CC122030"), new Pen(Brush("#404F6980"), 1), new Rect(marginX, footerY, contentW, footerH), 14, 14);
 
-            Text(dc, date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), marginX + 28, footerY + 34, 21, "#E2E8F0", true);
+            Text(dc, date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), marginX + 28, footerY + (hasThirdRow ? 22 : 34), 21, "#E2E8F0", true);
 
             var footerSubFormatted = new FormattedText("IMC.RE  ·  玩家战绩快照", CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Regular, 17, Brush("#94A3B8"), 1.0);
-            dc.DrawText(footerSubFormatted, new Point(marginX + contentW - footerSubFormatted.Width - 28, footerY + 36));
+            dc.DrawText(footerSubFormatted, new Point(marginX + contentW - footerSubFormatted.Width - 28, footerY + (hasThirdRow ? 24 : 36)));
         }
 
         var bitmap = new RenderTargetBitmap(Width, Height, 96, 96, PixelFormats.Pbgra32);

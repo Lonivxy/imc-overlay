@@ -8,6 +8,8 @@ namespace IMCBedwarsOverlay;
 
 internal enum LogEventKind { Roster, PlayerJoined, StatsCommand }
 internal sealed record LogEvent(LogEventKind Kind, string[] Names);
+internal sealed record LogSource(string Path, bool ConfirmedByOpenHandle, int? ProcessId);
+internal sealed record LogCandidate(string Path, int ProcessId, bool ConfirmedByOpenHandle, bool IsForeground, DateTime LastWriteUtc);
 
 internal sealed class MinecraftLogWatcher : IDisposable
 {
@@ -27,6 +29,12 @@ internal sealed class MinecraftLogWatcher : IDisposable
     [DllImport("kernel32.dll")]
     static extern IntPtr GetCurrentProcess();
 
+    [DllImport("user32.dll")]
+    static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool DuplicateHandle(IntPtr hSourceProcessHandle, IntPtr hSourceHandle, IntPtr hTargetProcessHandle, out IntPtr lpTargetHandle, uint dwDesiredAccess, bool bInheritHandle, uint dwOptions);
 
@@ -45,59 +53,111 @@ internal sealed class MinecraftLogWatcher : IDisposable
     const uint FILE_TYPE_DISK = 0x0001;
     const uint FILE_WRITE_DATA = 0x0002;
     const uint FILE_APPEND_DATA = 0x0004;
+    const uint FILE_NAME_OPENED = 0x0008;
     const int ProcessHandleInformation = 51;
     const int ProcessCommandLineInformation = 60;
+    const int StatusInfoLengthMismatch = unchecked((int)0xC0000004);
+    const int StatusBufferTooSmall = unchecked((int)0xC0000023);
+    const int InitialHandleSnapshotSize = 1024 * 1024;
+    const int MaximumHandleSnapshotSize = 32 * 1024 * 1024;
+    const int MaximumProcessHandleCount = 300_000;
+
+    static readonly Regex GameDirectoryArgument = new(
+        @"(?:^|\s)--gameDir(?:=|\s+)(?:""(?<quoted>[^""]+)""|(?<bare>[^\s""]+))",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    static readonly Regex ClientMainClass = new(
+        @"(?:^|\s)(?:net\.minecraft\.client\.main\.Main|net\.fabricmc\.loader\.impl\.launch\.knot\.KnotClient|org\.quiltmc\.loader\.impl\.launch\.knot\.KnotClient|net\.minecraft\.client\.Minecraft)(?=\s|$)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    static readonly Regex ClientLauncherClass = new(
+        @"(?:^|\s)(?:net\.minecraft\.launchwrapper\.Launch|cpw\.mods\.modlauncher\.Launcher)(?=\s|$)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     readonly Dictionary<string, Cursor> _cursors = new(StringComparer.OrdinalIgnoreCase);
     readonly Action<LogEvent> _onEvent;
-    readonly Func<IEnumerable<string>> _discover;
+    readonly Func<IEnumerable<string>>? _discoverPaths;
+    readonly Func<LogSource?> _discoverSource;
     readonly TimeSpan _pollInterval;
     readonly CancellationTokenSource _stop = new();
     readonly object _sync = new();
     bool _scanArmed, _connected, _forceImc;
+    bool _publishedSource;
 
-    public string? ActiveLogPath { get; private set; }
-    public event Action<string>? ActiveLogDetected;
+    public LogSource? ActiveLogSource { get; private set; }
+    public event Action<LogSource?>? ActiveLogDetected;
 
     public MinecraftLogWatcher(Action<LogEvent> onEvent, bool forceImc, Func<IEnumerable<string>>? discover = null, TimeSpan? pollInterval = null)
-    { _onEvent = onEvent; _forceImc = forceImc; _discover = discover ?? Discover; _pollInterval = pollInterval ?? TimeSpan.FromMilliseconds(400); }
+    {
+        _onEvent = onEvent;
+        _forceImc = forceImc;
+        _discoverPaths = discover;
+        _discoverSource = discover is null ? FindActiveClientLog : DiscoverInjectedPath;
+        _pollInterval = pollInterval ?? TimeSpan.FromMilliseconds(400);
+    }
     public void ArmScan() { lock (_sync) _scanArmed = true; }
     public void SetForceImc(bool value) { lock (_sync) _forceImc = value; }
     public void Start() => _ = Task.Run(() => RunAsync(_stop.Token));
     public void Dispose() { _stop.Cancel(); }
 
-    void SetActiveLogPath(string path)
+    void SetActiveLogSource(LogSource? source)
     {
+        bool notify;
+        bool reset;
         lock (_sync)
         {
-            if (string.Equals(ActiveLogPath, path, StringComparison.OrdinalIgnoreCase)) return;
-            ActiveLogPath = path;
+            var previous = ActiveLogSource;
+            reset = !string.Equals(previous?.Path, source?.Path, StringComparison.OrdinalIgnoreCase)
+                || previous?.ProcessId != source?.ProcessId;
+            notify = !_publishedSource || reset
+                || previous?.ConfirmedByOpenHandle != source?.ConfirmedByOpenHandle;
+            ActiveLogSource = source;
+            _publishedSource = true;
+            if (reset)
+            {
+                _cursors.Clear();
+                _connected = false;
+                if (previous is not null)
+                    _scanArmed = false;
+            }
         }
-        ActiveLogDetected?.Invoke(path);
+        if (notify) ActiveLogDetected?.Invoke(source);
     }
 
     async Task RunAsync(CancellationToken token)
     {
         var nextDiscovery = DateTime.MinValue;
-        string[] paths = [];
+        Task<LogSource?>? pendingDiscovery = null;
+        LogSource? source = null;
         try
         {
             using var timer = new PeriodicTimer(_pollInterval);
             do
             {
-                if (DateTime.UtcNow >= nextDiscovery)
+                if (pendingDiscovery is { IsCompleted: true })
                 {
-                    paths = _discover().ToArray();
-                    nextDiscovery = DateTime.UtcNow.AddSeconds(3);
-                    if (paths.Length > 0 && string.IsNullOrEmpty(ActiveLogPath))
+                    try
                     {
-                        SetActiveLogPath(paths[0]);
+                        source = await pendingDiscovery.ConfigureAwait(false);
                     }
+                    catch { source = null; }
+                    pendingDiscovery = null;
+                    SetActiveLogSource(source);
                 }
-                foreach (var path in paths)
+
+                if (pendingDiscovery is null && DateTime.UtcNow >= nextDiscovery)
                 {
-                    token.ThrowIfCancellationRequested();
-                    try { ReadNewLines(path, token); }
+                    pendingDiscovery = Task.Run(_discoverSource);
+                    _ = pendingDiscovery.ContinueWith(
+                        task => _ = task.Exception,
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                    nextDiscovery = DateTime.UtcNow.AddSeconds(3);
+                }
+
+                token.ThrowIfCancellationRequested();
+                if (source is not null)
+                {
+                    try { ReadNewLines(source.Path, token); }
                     catch (IOException) { }
                     catch (UnauthorizedAccessException) { }
                 }
@@ -123,10 +183,6 @@ internal sealed class MinecraftLogWatcher : IDisposable
         var chunk = new byte[16384]; int count; int remaining = 1024 * 1024;
         while (remaining > 0 && (count = file.Read(chunk, 0, Math.Min(chunk.Length, remaining))) > 0) { token.ThrowIfCancellationRequested(); buffer.Write(chunk, 0, count); remaining -= count; }
         cursor.Offset = file.Position;
-        if (cursor.Offset > initialOffset)
-        {
-            SetActiveLogPath(path);
-        }
         var bytes = buffer.ToArray(); int start = 0;
         for (int i = 0; i < bytes.Length; i++)
         {
@@ -171,219 +227,307 @@ internal sealed class MinecraftLogWatcher : IDisposable
         return path;
     }
 
-    public static List<string> FindActiveProcessLogs()
+    internal static LogCandidate? ChooseBestCandidate(IEnumerable<LogCandidate> candidates)
     {
-        var results = new List<string>();
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            return results;
+        return candidates
+            .OrderByDescending(candidate => candidate.IsForeground)
+            .ThenByDescending(candidate => candidate.ConfirmedByOpenHandle)
+            .ThenByDescending(candidate => LogPathPriority(candidate.Path))
+            .ThenByDescending(candidate => candidate.LastWriteUtc)
+            .ThenBy(candidate => candidate.ProcessId)
+            .FirstOrDefault();
+    }
 
+    internal static bool IsMinecraftClientCommandLine(string commandLine, out string? gameDirectory)
+    {
+        gameDirectory = ExtractGameDirectory(commandLine);
+        if (ClientMainClass.IsMatch(commandLine))
+            return true;
+        return gameDirectory is not null && ClientLauncherClass.IsMatch(commandLine);
+    }
+
+    internal static string? ExtractGameDirectory(string commandLine)
+    {
+        var match = GameDirectoryArgument.Match(commandLine);
+        if (!match.Success) return null;
+        var value = match.Groups["quoted"].Success ? match.Groups["quoted"].Value : match.Groups["bare"].Value;
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        try { return Path.GetFullPath(value); }
+        catch (Exception) { return null; }
+    }
+
+    LogSource? DiscoverInjectedPath()
+    {
+        if (_discoverPaths is null) return null;
+        try
+        {
+            var candidates = _discoverPaths()
+                .Where(File.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(path => new LogCandidate(path, 0, false, false, GetLastWriteUtc(path)));
+            var chosen = ChooseBestCandidate(candidates);
+            return chosen is null ? null : new LogSource(chosen.Path, false, null);
+        }
+        catch { return null; }
+    }
+
+    internal static LogSource? FindActiveClientLog()
+    {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return null;
+
+        var candidates = new List<LogCandidate>();
+        var foregroundPid = GetForegroundProcessId();
         Process[] processes;
         try
         {
-            var javaw = Process.GetProcessesByName("javaw");
-            var java = Process.GetProcessesByName("java");
-            processes = javaw.Concat(java).ToArray();
+            processes = Process.GetProcessesByName("javaw")
+                .Concat(Process.GetProcessesByName("java"))
+                .ToArray();
         }
-        catch
-        {
-            return results;
-        }
+        catch { return null; }
 
-        foreach (var proc in processes)
+        foreach (var process in processes)
         {
-            using (proc)
+            using (process)
             {
+                var pid = process.Id;
+                var isForeground = pid == foregroundPid;
+                string title;
+                try { title = process.MainWindowTitle; }
+                catch { title = ""; }
+
+                IntPtr processHandle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_DUP_HANDLE, false, pid);
+                bool canDuplicateHandles = processHandle != IntPtr.Zero;
+                if (processHandle == IntPtr.Zero)
+                    processHandle = OpenProcess(PROCESS_QUERY_INFORMATION, false, pid);
+
                 try
                 {
-                    var logs = FindLogsForProcess(proc.Id);
-                    results.AddRange(logs);
-                }
-                catch { }
-            }
-        }
-
-        results = results.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        results.Sort((a, b) =>
-        {
-            bool aMc = a.Contains("minecraft", StringComparison.OrdinalIgnoreCase);
-            bool bMc = b.Contains("minecraft", StringComparison.OrdinalIgnoreCase);
-            if (aMc != bMc) return aMc ? -1 : 1;
-            try
-            {
-                long lenA = File.Exists(a) ? new FileInfo(a).Length : 0;
-                long lenB = File.Exists(b) ? new FileInfo(b).Length : 0;
-                return lenB.CompareTo(lenA);
-            }
-            catch { return 0; }
-        });
-
-        return results;
-    }
-
-    static List<string> FindLogsForProcess(int pid)
-    {
-        var logs = new List<string>();
-        IntPtr hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_DUP_HANDLE, false, pid);
-        if (hProcess == IntPtr.Zero)
-            return logs;
-
-        try
-        {
-            int needed = 0;
-            int status = NtQueryInformationProcess(hProcess, ProcessHandleInformation, IntPtr.Zero, 0, out needed);
-            int bufSize = Math.Max(needed * 2, 1024 * 1024);
-            IntPtr pBuf = Marshal.AllocHGlobal(bufSize);
-            try
-            {
-                status = NtQueryInformationProcess(hProcess, ProcessHandleInformation, pBuf, bufSize, out needed);
-                if (status >= 0)
-                {
-                    long handleCount = IntPtr.Size == 8 ? Marshal.ReadInt64(pBuf) : Marshal.ReadInt32(pBuf);
-                    int stride = IntPtr.Size == 8 ? 40 : 28;
-                    int offset = IntPtr.Size * 2;
-                    IntPtr currentProcess = GetCurrentProcess();
-                    var sb = new StringBuilder(2048);
-
-                    for (int i = 0; i < handleCount; i++)
+                    string? gameDirectory = null;
+                    bool commandLineIdentifiesClient = false;
+                    if (processHandle != IntPtr.Zero)
                     {
-                        int at = offset + i * stride;
-                        if (at + stride > bufSize) break;
-
-                        IntPtr handleVal = Marshal.ReadIntPtr(pBuf, at);
-                        uint access = (uint)Marshal.ReadInt32(pBuf, at + IntPtr.Size * 3);
-
-                        if ((access & (FILE_WRITE_DATA | FILE_APPEND_DATA)) == 0)
-                            continue;
-
-                        if (!DuplicateHandle(hProcess, handleVal, currentProcess, out IntPtr copy, 0, false, DUPLICATE_SAME_ACCESS))
-                            continue;
-
                         try
                         {
-                            if (GetFileType(copy) != FILE_TYPE_DISK)
-                                continue;
+                            commandLineIdentifiesClient = IsMinecraftClientCommandLine(
+                                TryGetCommandLine(processHandle) ?? "", out gameDirectory);
+                        }
+                        catch { }
+                    }
 
-                            sb.Clear();
-                            uint len = GetFinalPathNameByHandleW(copy, sb, (uint)sb.Capacity, 0);
-                            if (len > 0 && len < sb.Capacity)
-                            {
-                                string path = NormalizeDevicePath(sb.ToString());
-                                if (path.EndsWith("latest.log", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    logs.Add(path);
-                                }
-                            }
-                        }
-                        finally
-                        {
-                            CloseHandle(copy);
-                        }
+                    bool titleIdentifiesClient = IsMinecraftClientWindowTitle(title);
+                    var openLogs = canDuplicateHandles && processHandle != IntPtr.Zero
+                        ? FindWritableLatestLogs(processHandle)
+                        : [];
+                    bool strongPathIdentifiesClient = openLogs.Any(IsStrongMinecraftLogPath);
+                    if (!commandLineIdentifiesClient && !titleIdentifiesClient && !strongPathIdentifiesClient)
+                        continue;
+
+                    foreach (var path in openLogs)
+                    {
+                        candidates.Add(new LogCandidate(path, pid, true, isForeground, GetLastWriteUtc(path)));
+                    }
+
+                    if (openLogs.Count == 0)
+                    {
+                        foreach (var path in FindGameDirectoryLogs(gameDirectory))
+                            candidates.Add(new LogCandidate(path, pid, false, isForeground, GetLastWriteUtc(path)));
                     }
                 }
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(pBuf);
-            }
-
-            if (logs.Count == 0)
-            {
-                string cmdLine = TryGetCommandLine(hProcess);
-                if (!string.IsNullOrEmpty(cmdLine))
+                catch { }
+                finally
                 {
-                    var dirLogs = ExtractLogsFromCommandLine(cmdLine);
-                    logs.AddRange(dirLogs);
+                    if (processHandle != IntPtr.Zero)
+                        CloseHandle(processHandle);
                 }
             }
         }
-        finally
-        {
-            CloseHandle(hProcess);
-        }
 
-        return logs;
+        var selected = ChooseBestCandidate(candidates);
+        return selected is null
+            ? null
+            : new LogSource(selected.Path, selected.ConfirmedByOpenHandle, selected.ProcessId);
     }
 
-    static string TryGetCommandLine(IntPtr hProcess)
+    static uint GetForegroundProcessId()
     {
         try
         {
-            int needed = 0;
-            NtQueryInformationProcess(hProcess, ProcessCommandLineInformation, IntPtr.Zero, 0, out needed);
-            int size = Math.Max(needed, 131072);
-            IntPtr pBuf = Marshal.AllocHGlobal(size);
-            try
+            var window = GetForegroundWindow();
+            return window == IntPtr.Zero ? 0 : GetWindowThreadProcessId(window, out var pid) == 0 ? 0 : pid;
+        }
+        catch { return 0; }
+    }
+
+    static bool IsMinecraftClientWindowTitle(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title) || title.Contains("server", StringComparison.OrdinalIgnoreCase))
+            return false;
+        return title.Contains("minecraft", StringComparison.OrdinalIgnoreCase)
+            || title.Contains("badlion", StringComparison.OrdinalIgnoreCase)
+            || title.Contains("lunar client", StringComparison.OrdinalIgnoreCase)
+            || title.Contains("feather", StringComparison.OrdinalIgnoreCase);
+    }
+
+    static bool IsStrongMinecraftLogPath(string path)
+    {
+        var normalized = path.Replace('/', '\\');
+        return normalized.Contains(@"\logs\blclient\minecraft\latest.log", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains(@"\.minecraft\logs\latest.log", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains(@"\.feather\player_logs\latest.log", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains(@"\.lunarclient\profiles\", StringComparison.OrdinalIgnoreCase);
+    }
+
+    static int LogPathPriority(string path)
+    {
+        var normalized = path.Replace('/', '\\');
+        if (normalized.Contains(@"\logs\blclient\chat\latest.log", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains(@"\logs\chat\latest.log", StringComparison.OrdinalIgnoreCase))
+            return 0;
+        if (normalized.Contains(@"\logs\blclient\minecraft\latest.log", StringComparison.OrdinalIgnoreCase))
+            return 3;
+        return 2;
+    }
+
+    static DateTime GetLastWriteUtc(string path)
+    {
+        try { return File.GetLastWriteTimeUtc(path); }
+        catch { return DateTime.MinValue; }
+    }
+
+    static List<string> FindWritableLatestLogs(IntPtr processHandle)
+    {
+        var logs = new List<string>();
+        var snapshot = QueryHandleSnapshot(processHandle, out var bufferSize);
+        if (snapshot == IntPtr.Zero) return logs;
+
+        try
+        {
+            long handleCount = IntPtr.Size == 8 ? Marshal.ReadInt64(snapshot) : Marshal.ReadInt32(snapshot);
+            if (handleCount is < 0 or > MaximumProcessHandleCount) return logs;
+
+            int stride = IntPtr.Size == 8 ? 40 : 28;
+            int firstEntry = IntPtr.Size * 2;
+            IntPtr currentProcess = GetCurrentProcess();
+            for (int i = 0; i < handleCount; i++)
             {
-                int status = NtQueryInformationProcess(hProcess, ProcessCommandLineInformation, pBuf, size, out needed);
-                if (status >= 0)
+                long entryOffset = firstEntry + (long)i * stride;
+                if (entryOffset + stride > bufferSize || entryOffset > int.MaxValue) break;
+                int at = (int)entryOffset;
+                var handleValue = Marshal.ReadIntPtr(snapshot, at);
+                uint access = (uint)Marshal.ReadInt32(snapshot, at + IntPtr.Size * 3);
+                if ((access & (FILE_WRITE_DATA | FILE_APPEND_DATA)) == 0)
+                    continue;
+
+                if (!DuplicateHandle(processHandle, handleValue, currentProcess, out var duplicate, 0, false, DUPLICATE_SAME_ACCESS))
+                    continue;
+
+                try
                 {
-                    ushort length = (ushort)Marshal.ReadInt16(pBuf);
-                    IntPtr pStr = Marshal.ReadIntPtr(pBuf, IntPtr.Size == 8 ? 8 : 4);
-                    if (pStr != IntPtr.Zero && length > 0)
-                    {
-                        return Marshal.PtrToStringUni(pStr, length / 2) ?? "";
-                    }
+                    if (GetFileType(duplicate) != FILE_TYPE_DISK)
+                        continue;
+                    var path = GetOpenedHandlePath(duplicate);
+                    if (path is not null
+                        && string.Equals(Path.GetFileName(path), "latest.log", StringComparison.OrdinalIgnoreCase)
+                        && File.Exists(path))
+                        logs.Add(path);
                 }
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(pBuf);
+                finally { CloseHandle(duplicate); }
             }
         }
         catch { }
-        return "";
+        finally { Marshal.FreeHGlobal(snapshot); }
+
+        return logs.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
-    static List<string> ExtractLogsFromCommandLine(string cmd)
+    static IntPtr QueryHandleSnapshot(IntPtr processHandle, out int bufferSize)
     {
-        var list = new List<string>();
-        var match = Regex.Match(cmd, @"--gameDir\s+(?:""([^""]+)""|([^\s]+))", RegexOptions.IgnoreCase);
-        if (match.Success)
+        bufferSize = 0;
+        int required = 0;
+        try { NtQueryInformationProcess(processHandle, ProcessHandleInformation, IntPtr.Zero, 0, out required); }
+        catch { return IntPtr.Zero; }
+
+        int size = Math.Max(InitialHandleSnapshotSize, required);
+        while (size <= MaximumHandleSnapshotSize)
         {
-            string dir = match.Groups[1].Success ? match.Groups[1].Value : match.Groups[2].Value;
-            if (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir))
+            var buffer = Marshal.AllocHGlobal(size);
+            int status;
+            try { status = NtQueryInformationProcess(processHandle, ProcessHandleInformation, buffer, size, out required); }
+            catch { Marshal.FreeHGlobal(buffer); return IntPtr.Zero; }
+
+            if (status >= 0)
             {
-                var candidates = new[]
+                bufferSize = size;
+                return buffer;
+            }
+
+            Marshal.FreeHGlobal(buffer);
+            if (status is not StatusInfoLengthMismatch and not StatusBufferTooSmall)
+                return IntPtr.Zero;
+            long next = required > size ? required : (long)size * 2;
+            if (next > MaximumHandleSnapshotSize) return IntPtr.Zero;
+            size = (int)next;
+        }
+        return IntPtr.Zero;
+    }
+
+    static string? GetOpenedHandlePath(IntPtr fileHandle)
+    {
+        var buffer = new StringBuilder(1024);
+        uint length = GetFinalPathNameByHandleW(fileHandle, buffer, (uint)buffer.Capacity, FILE_NAME_OPENED);
+        if (length == 0) return null;
+        if (length >= buffer.Capacity)
+        {
+            if (length > 32767) return null;
+            buffer = new StringBuilder((int)length + 1);
+            length = GetFinalPathNameByHandleW(fileHandle, buffer, (uint)buffer.Capacity, FILE_NAME_OPENED);
+        }
+        if (length == 0 || length >= buffer.Capacity) return null;
+        return NormalizeDevicePath(buffer.ToString());
+    }
+
+    static string? TryGetCommandLine(IntPtr processHandle)
+    {
+        try
+        {
+            int needed = 0;
+            NtQueryInformationProcess(processHandle, ProcessCommandLineInformation, IntPtr.Zero, 0, out needed);
+            int size = Math.Clamp(needed, 4096, 1024 * 1024);
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                var buffer = Marshal.AllocHGlobal(size);
+                try
                 {
-                    Path.Combine(dir, "logs", "latest.log"),
-                    Path.Combine(dir, "logs", "blclient", "minecraft", "latest.log"),
-                    Path.Combine(dir, "logs", "blclient", "chat", "latest.log"),
-                    Path.Combine(dir, ".minecraft", "logs", "latest.log")
-                };
-                foreach (var c in candidates)
-                {
-                    if (File.Exists(c)) list.Add(c);
+                    int status = NtQueryInformationProcess(processHandle, ProcessCommandLineInformation, buffer, size, out needed);
+                    if (status >= 0)
+                    {
+                        ushort length = (ushort)Marshal.ReadInt16(buffer);
+                        IntPtr text = Marshal.ReadIntPtr(buffer, IntPtr.Size == 8 ? 8 : 4);
+                        return text == IntPtr.Zero || length == 0 ? null : Marshal.PtrToStringUni(text, length / 2);
+                    }
                 }
+                finally { Marshal.FreeHGlobal(buffer); }
+
+                if (needed <= size || needed > 1024 * 1024) return null;
+                size = needed;
             }
         }
-        return list;
+        catch { }
+        return null;
     }
 
-    static IEnumerable<string> Discover()
+    internal static IEnumerable<string> FindGameDirectoryLogs(string? gameDirectory)
     {
-        var processLogs = FindActiveProcessLogs();
-        if (processLogs.Count > 0)
-            return processLogs;
-
-        var app = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var paths = new List<string>
+        if (string.IsNullOrWhiteSpace(gameDirectory)) return [];
+        var paths = new[]
         {
-            Path.Combine(app, ".minecraft", "logs", "latest.log"),
-            Path.Combine(app, ".minecraft", "logs", "blclient", "minecraft", "latest.log"),
-            Path.Combine(home, ".lunarclient", "profiles", "lunar", "1.8", "logs", "latest.log"),
-            Path.Combine(home, ".feather", "player_logs", "latest.log")
+            Path.Combine(gameDirectory, "logs", "blclient", "minecraft", "latest.log"),
+            Path.Combine(gameDirectory, "logs", "latest.log"),
+            Path.Combine(gameDirectory, "logs", "blclient", "chat", "latest.log"),
+            Path.Combine(gameDirectory, ".minecraft", "logs", "latest.log")
         };
-        foreach (var root in new[] { Path.Combine(app, ".minecraft", "logs"), Path.Combine(app, ".minecraft", "versions") })
-        {
-            try
-            {
-                if (Directory.Exists(root))
-                    paths.AddRange(Directory.EnumerateFiles(root, "latest.log", SearchOption.AllDirectories).Take(30));
-            }
-            catch (IOException) { }
-            catch (UnauthorizedAccessException) { }
-        }
-        return paths.Distinct(StringComparer.OrdinalIgnoreCase);
+        return paths.Distinct(StringComparer.OrdinalIgnoreCase).Where(File.Exists);
     }
 }

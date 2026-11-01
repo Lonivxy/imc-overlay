@@ -7,6 +7,8 @@ using System.Text.Json;
 
 namespace IMCBedwarsOverlay;
 
+internal sealed record LeaderboardFetchResult(LeaderboardData Data, bool IsFresh);
+
 internal sealed class StatsApiClient
 {
     readonly HttpClient _http;
@@ -53,9 +55,12 @@ internal sealed class StatsApiClient
     }
 
     public async Task<LeaderboardData> GetLeaderboardAsync(string mode, bool force = false, CancellationToken token = default)
+        => (await GetLeaderboardWithStatusAsync(mode, force, token).ConfigureAwait(false)).Data;
+
+    public async Task<LeaderboardFetchResult> GetLeaderboardWithStatusAsync(string mode, bool force = false, CancellationToken token = default)
     {
         if (!force && _lbCache.TryGetValue(mode, out var cached) && DateTime.UtcNow - cached.Time < TimeSpan.FromMinutes(10))
-            return cached.Data;
+            return new(cached.Data, false);
 
         try
         {
@@ -68,7 +73,7 @@ internal sealed class StatsApiClient
                 {
                     var data = new LeaderboardData(res.Players, mode, DateTime.UtcNow);
                     _lbCache[mode] = (data, DateTime.UtcNow);
-                    return data;
+                    return new(data, true);
                 }
             }
         }
@@ -76,9 +81,9 @@ internal sealed class StatsApiClient
         catch { }
 
         if (_lbCache.TryGetValue(mode, out var old))
-            return old.Data;
+            return new(old.Data, false);
 
-        return LeaderboardData.Empty;
+        return new(new LeaderboardData([], mode, DateTime.MinValue), false);
     }
 
     public async Task<PlayerRow> FetchAsync(string name, string mode, CancellationToken token)
@@ -119,7 +124,32 @@ internal sealed class StatsApiClient
                         var data = await JsonSerializer.DeserializeAsync<ApiResponse>(stream, JsonOptions, token).ConfigureAwait(false);
                         if (data?.Summary?.Metrics == null) throw new InvalidDataException("服务返回的数据格式不正确");
                         var s = data.Summary; var m = s.Metrics;
-                        var row = new PlayerRow { Username = string.IsNullOrWhiteSpace(s.Name) ? name : s.Name, State = "ok", GameMode = mode, Matches = s.Matches, Wins = s.Wins, MVPs = s.Mvps, WinRate = s.WinRate, Fkdr = m.Fkdr, BedsBroken = m.BedsBroken, FinalKills = m.FinalKills, Kills = m.Kills, AvgBeds = m.AvgBeds, KD = m.Kd, Rating = m.Rating, Adr = m.Adr, HsRate = m.HsRate };
+                        var row = new PlayerRow
+                        {
+                            Username = string.IsNullOrWhiteSpace(s.Name) ? name : s.Name,
+                            Uuid = s.Uuid,
+                            State = "ok",
+                            GameMode = mode,
+                            Matches = s.Matches,
+                            Wins = s.Wins,
+                            MVPs = s.Mvps,
+                            WinRate = s.WinRate,
+                            Fkdr = m.Fkdr,
+                            BedsBroken = m.BedsBroken,
+                            FinalKills = m.FinalKills,
+                            Kills = m.Kills,
+                            AvgBeds = m.AvgBeds,
+                            KD = m.Kd,
+                            Rating = m.Rating,
+                            Adr = m.Adr,
+                            HsRate = m.HsRate,
+                            Kast = m.Kast,
+                            Plants = m.Plants,
+                            Defuses = m.Defuses,
+                            MaxRating = m.MaxRating,
+                            RatingTrend = data.Trend ?? [],
+                            RecentMatches = data.Recent ?? []
+                        };
                         if (_lbCache.TryGetValue(mode, out var lbData)) row.ApplyLeaderboard(lbData.Data);
                         token.ThrowIfCancellationRequested();
                         _cache[cacheKey] = (row, DateTime.UtcNow);

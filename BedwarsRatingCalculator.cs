@@ -3,13 +3,25 @@ namespace IMCBedwarsOverlay;
 // A bounded heuristic, not an official IMC.RE rating. One is the neutral baseline.
 internal static class BedwarsRatingCalculator
 {
-    public static double? Calculate(long matches, double winRate, double fkdr, double avgBeds)
+    public static double? Calculate(long matches, long wins, double fkdr, double kd)
     {
-        if (matches <= 0 || !double.IsFinite(winRate) || !double.IsFinite(fkdr) || !double.IsFinite(avgBeds)) return null;
-        var win = Math.Clamp((winRate - 0.5) * 2, -1, 1);
-        var finals = Math.Clamp(Math.Log2((Math.Max(0, fkdr) + 1) / 2), -1, 2);
-        var beds = Math.Clamp((avgBeds - 0.5) / 0.5, -1, 2);
-        var confidence = matches / (matches + 20.0);
-        return Math.Clamp(1.0 + confidence * (0.45 * finals + 0.35 * win + 0.20 * beds), 0.25, 2.5);
+        if (matches <= 0 || wins < 0 || wins > matches
+            || !double.IsFinite(fkdr) || fkdr < 0
+            || !double.IsFinite(kd) || kd < 0)
+            return null;
+
+        var n = (double)matches;
+        var losses = matches - wins;
+        var wlr = wins / (double)Math.Max(1L, losses);
+
+        var fkdrRating = 0.20 + 0.80 * Math.Log2(fkdr + 1.0);
+        var wlrRating = 0.20 + 0.80 * Math.Log2(wlr + 1.0);
+        var kdRating = 0.25 + 0.75 * Math.Log2(kd + 1.0);
+        var performance = 0.45 * fkdrRating + 0.35 * wlrRating + 0.20 * kdRating;
+        var confidence = n / (n + 20.0);
+        var experienceBonus = 0.04 * Math.Log10(n + 1.0);
+        var rating = 1.0 + confidence * (performance - 1.0) * 1.25 + experienceBonus;
+
+        return Math.Clamp(rating, 0.10, 3.00);
     }
 }

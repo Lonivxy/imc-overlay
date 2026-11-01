@@ -28,6 +28,10 @@ sealed class PlayerComparer(string key, bool descending) : IComparer
             "KD" => a.KD != b.KD ? a.KD.CompareTo(b.KD) : a.Kills.CompareTo(b.Kills),
             "Adr" => a.Adr != b.Adr ? a.Adr.CompareTo(b.Adr) : a.Matches.CompareTo(b.Matches),
             "HsRate" => a.HsRate != b.HsRate ? a.HsRate.CompareTo(b.HsRate) : a.Matches.CompareTo(b.Matches),
+            "Kast" => a.Kast != b.Kast ? a.Kast.CompareTo(b.Kast) : a.Matches.CompareTo(b.Matches),
+            "Plants" => a.Plants != b.Plants ? a.Plants.CompareTo(b.Plants) : a.Matches.CompareTo(b.Matches),
+            "Defuses" => a.Defuses != b.Defuses ? a.Defuses.CompareTo(b.Defuses) : a.Matches.CompareTo(b.Matches),
+            "MaxRating" => a.MaxRating != b.MaxRating ? a.MaxRating.CompareTo(b.MaxRating) : a.Matches.CompareTo(b.Matches),
             "名次" => Nullable.Compare(a.LeaderboardDisplayRank.Rank, b.LeaderboardDisplayRank.Rank),
             _ => 0
         };
@@ -45,11 +49,15 @@ public sealed class PlayerRow : INotifyPropertyChanged
     public bool IsPinnedSelf { get => _isPinnedSelf; set { _isPinnedSelf = value; Changed(nameof(IsPinnedSelf)); } }
     ImageSource? _avatar;
     public ImageSource? Avatar { get => _avatar; set { _avatar = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Avatar))); } }
+    public string Uuid { get; set; } = "";
     public long Matches { get; set; } public long Wins { get; set; } public long MVPs { get; set; } public long BedsBroken { get; set; } public long FinalKills { get; set; } public long Kills { get; set; }
     public double WinRate { get; set; } public double Fkdr { get; set; } public double AvgBeds { get; set; } public double KD { get; set; } public double Rating { get; set; } public double Adr { get; set; } public double HsRate { get; set; }
+    public double Kast { get; set; } public long Plants { get; set; } public long Defuses { get; set; } public double MaxRating { get; set; }
+    public double[] RatingTrend { get; set; } = [];
+    public List<ApiRecentMatch> RecentMatches { get; set; } = [];
     public string State { get => _state; set { _state = value; Changed(); Changed(nameof(MatchesLabel)); } }
     public string Error { get => _error; set { _error = value; Changed(); Changed(nameof(MatchesLabel)); } }
-    public double? OverallRating => State != "ok" ? null : GameMode == "counterember" ? Rating : BedwarsRatingCalculator.Calculate(Matches, WinRate, Fkdr, AvgBeds);
+    public double? OverallRating => State != "ok" || Matches <= 0 ? null : GameMode == "counterember" ? Rating : BedwarsRatingCalculator.Calculate(Matches, Wins, Fkdr, KD);
     double? DisplayedRating => OverallRating is double rating && double.IsFinite(rating) ? Math.Round(rating, 2, MidpointRounding.ToEven) : null;
     public bool IsHighRating => DisplayedRating >= 1.35;
     public bool IsWarningRating => DisplayedRating >= 1.12 && DisplayedRating < 1.35;
@@ -58,9 +66,15 @@ public sealed class PlayerRow : INotifyPropertyChanged
     public string WinRateColor => State != "ok" ? "#64748B" : WinRate >= .60 ? "#34D399" : WinRate >= .40 ? "#38BDF8" : "#A8B6C9";
     public string FkdrColor => State != "ok" ? "#64748B" : Fkdr >= 4 ? "#FB7185" : Fkdr >= 2.5 ? "#FB923C" : Fkdr >= 1.5 ? "#FBBF24" : Fkdr >= .8 ? "#34D399" : "#A8B6C9";
     public string MVPColor => State == "ok" && MVPs > 0 ? "#FBBF24" : "#64748B";
-    public string RatingLabel => OverallRating is double value ? value.ToString("F2") + (GameMode == "bedwars" && Matches < 10 ? "*" : "") : "—";
-    public string RatingInfo => GameMode == "bedwars" ? "项目估算值，非官方 Rating；场次越少越接近 1.00。* 表示少于 10 场。" : "IMC.RE 提供的 CounterEmber Rating。";
+    public string RatingLabel => OverallRating is double value ? value.ToString("F2") + (Matches < 10 ? "*" : "") : "—";
+    public string RatingInfo => GameMode == "bedwars"
+        ? "项目估算值，非官方 Rating；综合 FKDR、WLR、K/D 和场次平滑。* 表示少于 10 场。"
+        : "IMC.RE 提供的 CounterEmber Rating。* 表示少于 10 场，样本较少。";
     public string KDLabel => State == "ok" ? KD.ToString("F2") : "—"; public string AdrLabel => State == "ok" ? Adr.ToString("F1") : "—"; public string HsRateLabel => State == "ok" ? HsRate.ToString("P1") : "—";
+    public string KastLabel => State == "ok" ? Kast.ToString("P1") : "—";
+    public string PlantsLabel => State == "ok" ? Plants.ToString() : "—";
+    public string DefusesLabel => State == "ok" ? Defuses.ToString() : "—";
+    public string MaxRatingLabel => State == "ok" && Matches > 0 ? MaxRating.ToString("F2") : "—";
     public string MVPsLabel => State == "ok" ? (MVPs > 0 ? $"★ {MVPs}" : "0") : "—"; public string BedsLabel => State == "ok" ? BedsBroken.ToString() : "—"; public string FinalsLabel => State == "ok" ? FinalKills.ToString() : "—"; public string KillsLabel => State == "ok" ? Kills.ToString() : "—";
     public string MatchesLabel => State == "ok" ? $"{Matches} 场" : State == "loading" ? "查询中…" : State == "unregistered" ? "无记录" : "查询失败";
 
@@ -76,6 +90,10 @@ public sealed class PlayerRow : INotifyPropertyChanged
     StatRankInfo _kdRank = StatRankInfo.Empty;
     StatRankInfo _adrRank = StatRankInfo.Empty;
     StatRankInfo _hsRateRank = StatRankInfo.Empty;
+    StatRankInfo _kastRank = StatRankInfo.Empty;
+    StatRankInfo _plantsRank = StatRankInfo.Empty;
+    StatRankInfo _defusesRank = StatRankInfo.Empty;
+    StatRankInfo _maxRatingRank = StatRankInfo.Empty;
     StatRankInfo _leaderboardDisplayRank = StatRankInfo.Empty;
 
     public StatRankInfo WinRateRank { get => _winRateRank; set { _winRateRank = value; Changed(nameof(WinRateRank)); } }
@@ -90,6 +108,10 @@ public sealed class PlayerRow : INotifyPropertyChanged
     public StatRankInfo KDRank { get => _kdRank; set { _kdRank = value; Changed(nameof(KDRank)); } }
     public StatRankInfo AdrRank { get => _adrRank; set { _adrRank = value; Changed(nameof(AdrRank)); } }
     public StatRankInfo HsRateRank { get => _hsRateRank; set { _hsRateRank = value; Changed(nameof(HsRateRank)); } }
+    public StatRankInfo KastRank { get => _kastRank; set { _kastRank = value; Changed(nameof(KastRank)); } }
+    public StatRankInfo PlantsRank { get => _plantsRank; set { _plantsRank = value; Changed(nameof(PlantsRank)); } }
+    public StatRankInfo DefusesRank { get => _defusesRank; set { _defusesRank = value; Changed(nameof(DefusesRank)); } }
+    public StatRankInfo MaxRatingRank { get => _maxRatingRank; set { _maxRatingRank = value; Changed(nameof(MaxRatingRank)); } }
     public StatRankInfo LeaderboardDisplayRank { get => _leaderboardDisplayRank; set { _leaderboardDisplayRank = value; Changed(nameof(LeaderboardDisplayRank)); } }
 
     public void ApplyLeaderboard(LeaderboardData? lb)
@@ -114,6 +136,10 @@ public sealed class PlayerRow : INotifyPropertyChanged
             KDRank = StatRankInfo.None;
             AdrRank = StatRankInfo.None;
             HsRateRank = StatRankInfo.None;
+            KastRank = StatRankInfo.None;
+            PlantsRank = StatRankInfo.None;
+            DefusesRank = StatRankInfo.None;
+            MaxRatingRank = StatRankInfo.None;
             return;
         }
 
@@ -129,6 +155,10 @@ public sealed class PlayerRow : INotifyPropertyChanged
         KDRank = new StatRankInfo(lb.GetRankKD(KD));
         AdrRank = new StatRankInfo(lb.GetRankAdr(Adr));
         HsRateRank = new StatRankInfo(lb.GetRankHsRate(HsRate));
+        KastRank = new StatRankInfo(lb.GetRankKast(Kast));
+        PlantsRank = new StatRankInfo(lb.GetRankPlants(Plants));
+        DefusesRank = new StatRankInfo(lb.GetRankDefuses(Defuses));
+        MaxRatingRank = new StatRankInfo(lb.GetRankMaxRating(MaxRating));
     }
 
     public void ResetRanks()
@@ -145,21 +175,28 @@ public sealed class PlayerRow : INotifyPropertyChanged
         KDRank = StatRankInfo.Empty;
         AdrRank = StatRankInfo.Empty;
         HsRateRank = StatRankInfo.Empty;
+        KastRank = StatRankInfo.Empty;
+        PlantsRank = StatRankInfo.Empty;
+        DefusesRank = StatRankInfo.Empty;
+        MaxRatingRank = StatRankInfo.Empty;
         LeaderboardDisplayRank = StatRankInfo.Empty;
     }
 
     public void CopyFrom(PlayerRow x)
     {
-        Username = x.Username; GameMode = x.GameMode; Matches = x.Matches; Wins = x.Wins; MVPs = x.MVPs;
+        Username = x.Username; Uuid = x.Uuid; GameMode = x.GameMode; Matches = x.Matches; Wins = x.Wins; MVPs = x.MVPs;
         BedsBroken = x.BedsBroken; FinalKills = x.FinalKills; Kills = x.Kills; WinRate = x.WinRate;
         Fkdr = x.Fkdr; AvgBeds = x.AvgBeds; KD = x.KD; Rating = x.Rating; Adr = x.Adr; HsRate = x.HsRate;
+        Kast = x.Kast; Plants = x.Plants; Defuses = x.Defuses; MaxRating = x.MaxRating;
+        RatingTrend = x.RatingTrend.ToArray(); RecentMatches = x.RecentMatches.ToList();
         Error = x.Error; State = x.State;
         WinRateRank = x.WinRateRank; WinsRank = x.WinsRank; MVPRank = x.MVPRank; RatingRank = x.RatingRank; FkdrRank = x.FkdrRank;
         BedsRank = x.BedsRank; FinalsRank = x.FinalsRank; KillsRank = x.KillsRank; MatchesRank = x.MatchesRank;
         KDRank = x.KDRank; AdrRank = x.AdrRank; HsRateRank = x.HsRateRank;
-        if (x.IsPinnedSelf) IsPinnedSelf = true;
-        if (x.Avatar != null) Avatar = x.Avatar;
-        if (x.LeaderboardDisplayRank != StatRankInfo.Empty) LeaderboardDisplayRank = x.LeaderboardDisplayRank;
+        KastRank = x.KastRank; PlantsRank = x.PlantsRank; DefusesRank = x.DefusesRank; MaxRatingRank = x.MaxRatingRank;
+        IsPinnedSelf = x.IsPinnedSelf;
+        Avatar = x.Avatar;
+        LeaderboardDisplayRank = x.LeaderboardDisplayRank;
         Changed(string.Empty);
     }
 
@@ -171,16 +208,100 @@ public sealed class PlayerRow : INotifyPropertyChanged
         {
             nameof(OverallRating), nameof(IsHighRating), nameof(IsWarningRating), nameof(RatingLabel),
             nameof(RatingInfo), nameof(ThreatLabel), nameof(WinRateLabel), nameof(FkdrLabel),
-            nameof(MatchesLabel), nameof(MVPsLabel), nameof(BedsLabel), nameof(FinalsLabel),
+            nameof(MatchesLabel), nameof(MVPsLabel), nameof(BedsLabel), nameof(FinalsLabel), nameof(KastLabel),
+            nameof(PlantsLabel), nameof(DefusesLabel), nameof(MaxRatingLabel),
             nameof(KillsLabel), nameof(WinRateRank), nameof(WinsRank), nameof(MVPRank), nameof(RatingRank),
             nameof(FkdrRank), nameof(BedsRank), nameof(FinalsRank), nameof(KillsRank),
-            nameof(MatchesRank), nameof(KDRank), nameof(AdrRank), nameof(HsRateRank), nameof(IsPinnedSelf),
+            nameof(MatchesRank), nameof(KDRank), nameof(AdrRank), nameof(HsRateRank), nameof(KastRank),
+            nameof(PlantsRank), nameof(DefusesRank), nameof(MaxRatingRank), nameof(IsPinnedSelf),
             nameof(LeaderboardDisplayRank)
         })
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(p));
     }
 }
 
-public sealed class ApiResponse { public ApiSummary? Summary { get; set; } }
-public sealed class ApiSummary { public string Name { get; set; } = ""; public long Matches { get; set; } public long Wins { get; set; } public long Mvps { get; set; } public double WinRate { get; set; } public ApiMetrics Metrics { get; set; } = new(); }
-public sealed class ApiMetrics { public double Fkdr { get; set; } public double Kd { get; set; } public double AvgBeds { get; set; } public double Rating { get; set; } public double Adr { get; set; } public double HsRate { get; set; } public long FinalKills { get; set; } public long BedsBroken { get; set; } public long Kills { get; set; } }
+public sealed class ApiResponse
+{
+    public ApiSummary? Summary { get; set; }
+    public double[] Trend { get; set; } = [];
+    public List<ApiRecentMatch> Recent { get; set; } = [];
+}
+
+public sealed class ApiSummary
+{
+    public string Uuid { get; set; } = "";
+    public string Name { get; set; } = "";
+    public long Matches { get; set; }
+    public long Wins { get; set; }
+    public long Mvps { get; set; }
+    public double WinRate { get; set; }
+    public ApiMetrics Metrics { get; set; } = new();
+}
+
+public sealed class ApiMetrics
+{
+    public double Fkdr { get; set; }
+    public double Kd { get; set; }
+    public double AvgBeds { get; set; }
+    public double Rating { get; set; }
+    public double Adr { get; set; }
+    public double HsRate { get; set; }
+    public long FinalKills { get; set; }
+    public long BedsBroken { get; set; }
+    public long Kills { get; set; }
+    public double Kast { get; set; }
+    public long Plants { get; set; }
+    public long Defuses { get; set; }
+    public double MaxRating { get; set; }
+}
+
+public sealed class ApiRecentMatch
+{
+    public string MatchId { get; set; } = "";
+    public string Mode { get; set; } = "";
+    public string Map { get; set; } = "";
+    public string Team { get; set; } = "";
+    public bool? Won { get; set; }
+    public bool? Mvp { get; set; }
+    public string Winner { get; set; } = "";
+    public List<ApiTeamScore> Teams { get; set; } = [];
+    public DateTimeOffset? EndedAt { get; set; }
+    public ApiRecentStats Stats { get; set; } = new();
+    public ApiRecentMetrics Metrics { get; set; } = new();
+    public bool? Counted { get; set; }
+}
+
+public sealed class ApiTeamScore
+{
+    public string Id { get; set; } = "";
+    public int Score { get; set; }
+}
+
+public sealed class ApiRecentStats
+{
+    public double? Kills { get; set; }
+    public double? Damage { get; set; }
+    public double? Deaths { get; set; }
+    public double? Plants { get; set; }
+    public double? Rating { get; set; }
+    public double? Assists { get; set; }
+    public double? Defuses { get; set; }
+    public double? Headshots { get; set; }
+    public double? KastRounds { get; set; }
+    public double? MvpEligible { get; set; }
+    public double? RoundsPlayed { get; set; }
+    public double? RatingQualified { get; set; }
+}
+
+public sealed class ApiRecentMetrics
+{
+    public double? Adr { get; set; }
+    public double? Defuses { get; set; }
+    public double? HsRate { get; set; }
+    public double? Kast { get; set; }
+    public double? Kd { get; set; }
+    public double? Kills { get; set; }
+    public double? MaxRating { get; set; }
+    public double? Plants { get; set; }
+    public double? Rating { get; set; }
+}
