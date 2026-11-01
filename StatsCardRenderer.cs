@@ -66,7 +66,7 @@ internal static class StatsCardRenderer
             string ratingColor = player.IsHighRating ? "#FB7185" : player.IsWarningRating ? "#FBBF24" : "#38BDF8";
 
             double ratingX = 180 + nameWidth + 24;
-            Text(dc, "RATING", ratingX, headerY + 36, 11, "#94A3B8", true);
+            Text(dc, player.GameMode == "counterember" ? "RATING" : "RATING PRO", ratingX, headerY + 36, 11, "#94A3B8", true);
 
             var ratingFormatted = new FormattedText(ratingStr, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Bold, 42, Brush(ratingColor), 1.0)
             { MaxLineCount = 1 };
@@ -84,7 +84,7 @@ internal static class StatsCardRenderer
 
             // Subtitle under username / rating
             string subNote = player.GameMode == "bedwars"
-                ? ("估算 Rating  ·  全服天梯 " + ratingRankTag + (player.Matches < 10 ? "  ·  场次较少" : ""))
+                ? ("Rating Pro  ·  全服天梯 " + ratingRankTag + (player.Matches < 10 ? "  ·  场次较少" : ""))
                 : ("官方天梯 Rating  ·  全服排名 " + ratingRankTag);
             Text(dc, subNote, 180, headerY + 104, 14, "#94A3B8", false, 580);
 

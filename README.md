@@ -24,45 +24,45 @@ CounterEmber 查询还可打开 Rating 趋势和近期比赛明细：
 
 查询成功后可以选择「用图片查看」，生成带玩家头像、模式数据和日期的战绩卡，再将 PNG 保存到「图片\IMC.RE」文件夹并自动复制到剪贴板。背景使用 Minecraft 官方壁纸，首次生成需要联网加载。
 
-默认按 `\` 显示或隐藏悬浮窗（支持在设置中交互式录制任意按键或组合键，如 `F8`、`Ctrl + Tab`，支持一键恢复默认）；右上角 × 退出程序。顶栏支持一键「清空」同局列表；查询玩家支持最近历史记录快速重查。悬浮窗自动记忆停靠位置与窗口尺寸，并可在设置中开启极危玩家进场音效预警。可在设置中调整不透明度，并拖动窗口右下角手柄缩放。
+默认按 `\` 显示或隐藏悬浮窗（支持在设置中交互式录制任意按键或组合键，如 `F8`、`Ctrl + Tab`，支持一键恢复默认）；右上角 × 退出程序。顶栏支持一键「清空」同局列表；查询玩家支持最近历史记录快速重查。悬浮窗自动记忆停靠位置与窗口尺寸，并可在设置中开启极其危险玩家进场音效预警。可在设置中调整不透明度，并拖动窗口右下角手柄缩放。
 
 起床战争显示胜率、MVP、FKDR、拆床和终杀；CounterEmber 显示 Rating、K/D、ADR 和爆头率。点击表头可排序。数据来自 IMC.RE 的公开战绩接口，头像通过 mc-heads.net 加载。
 
-### 起床战争估算 Rating
+### 起床战争 Rating Pro
 
-起床战争 Rating 是本项目的启发式估算，**不是 IMC.RE 的官方评分**。它综合 FKDR、胜负比和 K/D，并对少量对局做样本量收缩。计算方式如下：
+起床战争 **Rating Pro** 是本项目的启发式估算，**不是 IMC.RE 的官方评分**。终杀效率与场均拆床占 85% 权重，WLR 和普通 KDR 作为辅助指标；场次只用于样本置信度修正，不会额外加分。
 
-令 `n` 为对局数、`w` 为胜场数、`l = n - w` 为负场数、`f` 为 FKDR、`k` 为 K/D。FKDR 和 K/D 使用 IMC.RE 接口返回的比率；胜负比由胜场和负场计算。各比率的分母使用至少为 1 的平滑值：
+令 `n` 为比赛总场次、`w` 为胜场数、`l = n - w` 为负场数、`b` 为场均拆床、`f` 为 FKDR、`k` 为 KDR。所有比率使用至少为 1 的分母；FKDR 和 KDR 使用 IMC.RE 汇总接口返回的比率：
 
 $$
-\mathrm{WLR} = \frac{w}{\max(1,l)}, \qquad
-\mathrm{FKDR} = \frac{\text{final kills}}{\max(1,\text{final deaths})}, \qquad
-\mathrm{KDR} = \frac{\text{kills}}{\max(1,\text{deaths})}.
+b=\frac{\text{拆床总数}}{n}, \qquad
+\mathrm{FKDR}=\frac{\text{终杀}}{\max(1,\text{终死})}, \qquad
+\mathrm{WLR}=\frac{w}{\max(1,l)}, \qquad
+\mathrm{KDR}=\frac{\text{击杀}}{\max(1,\text{死亡})}.
 $$
+
+四项指标分别转换并限制范围：
 
 $$
 \begin{aligned}
-R_{\mathrm{FKDR}} &= 0.20 + 0.80\log_2(f+1), \\
-R_{\mathrm{WLR}} &= 0.20 + 0.80\log_2(\mathrm{WLR}+1), \\
-R_{\mathrm{KDR}} &= 0.25 + 0.75\log_2(\mathrm{KDR}+1), \\
-\mathrm{Perf} &= 0.45R_{\mathrm{FKDR}} + 0.35R_{\mathrm{WLR}} + 0.20R_{\mathrm{KDR}}, \\
-\mathrm{Conf}(n) &= \frac{n}{n+20}.
+F &= \min\left(\max\left(\log_2\frac{f+1}{2},-1\right),3\right), \\
+B &= \min\left(\max\left(\log_2(b+0.5),-1\right),2\right), \\
+W &= \min\left(\max\left(\log_2\frac{\mathrm{WLR}+1}{2},-1\right),2\right), \\
+K &= \min\left(\max\left(\log_2\frac{\mathrm{KDR}+1}{2},-1\right),2\right), \\
+P &= 0.45F + 0.40B + 0.10W + 0.05K, \\
+C(n) &= \frac{n}{n+20}.
 \end{aligned}
 $$
 
 $$
-\mathrm{Rating}_{\mathrm{BW}} = \min\left(\max\left(
-1 + \mathrm{Conf}(n)(\mathrm{Perf}-1)\times1.25 + 0.04\log_{10}(n+1),
-0.10\right), 3.00\right).
+\mathrm{Rating\ Pro}=\min\left(\max\left(1+1.25\,C(n)P,0.10\right),3.00\right).
 $$
 
-其中 `Conf(n)` 会降低低场次的表现影响；`0.04 log_{10}(n+1)` 是较小的经验场次加成。最终 Rating 限制在 0.10 到 3.00 之间。累计拆床数不直接提高评分。
+最终分数限制在 0.10 到 3.00。0 场比赛或统计数据无效时不显示评分；少于 10 场时分数后显示 `*`。计算使用未舍入数值，显示时保留两位小数。
 
-少于 10 场时数字后显示 `*`，提示样本不足；无对局时不显示评分。威胁标签按显示到小数点后两位的估算值分级：1.35 及以上为「极危」、1.12 至 1.34 为「危险」，其他为「普通」。累计拆床数不直接提高评分。
+威胁等级按未舍入的 Rating 判断：2.00–3.00 为「极其危险」，1.40–未满 2.00 为「危险」，0.85–未满 1.40 为「普通」，0.10–未满 0.85 为「低威胁」。表格整行对「极其危险」标红、「危险」标黄、「低威胁」使用蓝色提示；「普通」保持常规背景。CounterEmber 仍使用 IMC.RE 官方 Rating，但复用相同的界面威胁分级。跨模式的分数不能直接比较。
 
-表格按显示到小数点后两位的有效 Rating 给玩家整行着色：1.35 及以上为红色，1.12 至 1.34 为黄色，低于 1.12 或没有有效评分时保持普通背景。该着色规则同样适用于 CounterEmber 的官方 Rating；跨模式的评分不可直接比较。
-
-评分仅用于快速参考，权重和分级尚未依据服务器玩家数据校准，不能代表真实水平或判定玩家身份。
+Rating Pro 的权重和分级尚未依据全服数据校准，仅供快速参考，不能代表真实水平或判定玩家身份。
 
 日志句柄枚举使用 Windows 的 `NtQueryInformationProcess` 内部接口。微软说明该接口可能随 Windows 版本变化，因此程序在接口不可用或权限不足时会退回到游戏目录推测。[API 文档](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess)。
 

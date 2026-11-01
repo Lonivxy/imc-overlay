@@ -189,7 +189,7 @@ public sealed class LeaderboardData
         }
         else
         {
-            _ratings = Players.Select(p => BedwarsRatingCalculator.Calculate(p.Matches, p.Wins, p.Metrics.Fkdr, p.Metrics.Kd) ?? 0.0)
+            _ratings = Players.Select(p => BedwarsRatingCalculator.Calculate(p.Matches, p.Wins, p.Metrics.BedsBroken, p.Metrics.Fkdr, p.Metrics.Kd) ?? 0.0)
                 .OrderByDescending(x => x).ToArray();
         }
     }

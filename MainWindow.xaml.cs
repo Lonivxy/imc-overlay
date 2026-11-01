@@ -469,6 +469,7 @@ public partial class MainWindow : Window
         foreach (var col in PlayersGrid.Columns)
         {
             var key = col.SortMemberPath;
+            if (key == "Rating") col.Header = ce ? "Rating" : "Rating Pro";
             bool bwOnly = key is "threat" or "Fkdr" or "BedsBroken" or "FinalKills";
             bool ceOnly = key is "KD" or "Adr" or "HsRate" or "Kast" or "Plants" or "Defuses" or "MaxRating";
             col.Visibility = (bwOnly && ce) || (ceOnly && !ce) ? Visibility.Collapsed : Visibility.Visible;
@@ -479,6 +480,7 @@ public partial class MainWindow : Window
         foreach (var col in LeaderboardGrid.Columns)
         {
             var key = col.SortMemberPath;
+            if (key == "Rating") col.Header = ce ? "Rating" : "Rating Pro";
             bool bwOnly = key is "Fkdr" or "BedsBroken" or "FinalKills";
             bool ceOnly = key is "KD" or "Adr" or "HsRate" or "Kast" or "Plants" or "Defuses" or "MaxRating";
             col.Visibility = (bwOnly && ce) || (ceOnly && !ce) ? Visibility.Collapsed : Visibility.Visible;
@@ -486,6 +488,8 @@ public partial class MainWindow : Window
         }
         if (LbCategoryBar != null)
         {
+            LbCatRating.Content = ce ? "Rating 榜" : "Rating Pro 榜";
+            LbSubTitle.Text = ce ? " (Top 50 · Rating 榜) — CounterEmber" : " (Top 50 · Rating Pro 榜) — 起床战争";
             LbCatFkdr.Visibility = ce ? Visibility.Collapsed : Visibility.Visible;
             LbCatBeds.Visibility = ce ? Visibility.Collapsed : Visibility.Visible;
             LbCatFinals.Visibility = ce ? Visibility.Collapsed : Visibility.Visible;
@@ -614,7 +618,7 @@ public partial class MainWindow : Window
     }
     static string FormatStats(PlayerRow p) => p.GameMode == "counterember"
         ? $"[IMC.RE CounterEmber] {p.Username} | 胜率: {p.WinRate:P1} ({p.Wins}胜/{p.Matches}场) | Rating: {p.RatingLabel} (最高 {(p.Matches > 0 ? p.MaxRating.ToString("F2") : "—")}) | K/D: {p.KD:F2} | KAST: {p.Kast:P1} | ADR: {p.Adr:F1} | 爆头率: {p.HsRate:P1} | MVP: {p.MVPs} | 击杀: {p.Kills} | 下包: {p.Plants} | 拆包: {p.Defuses}"
-        : $"[IMC.RE 起床战争] {p.Username} | 估算 Rating: {p.RatingLabel} | 胜率: {p.WinRate:P1} ({p.Wins}胜/{p.Matches}场) | FKDR: {p.Fkdr:F2} | 拆床: {p.BedsBroken} | 终杀: {p.FinalKills} | MVP: {p.MVPs} | 击杀: {p.Kills}";
+        : $"[IMC.RE 起床战争] {p.Username} | Rating Pro: {p.RatingLabel} | 胜率: {p.WinRate:P1} ({p.Wins}胜/{p.Matches}场) | FKDR: {p.Fkdr:F2} | 拆床: {p.BedsBroken} | 终杀: {p.FinalKills} | MVP: {p.MVPs} | 击杀: {p.Kills}";
     void UpdateSummary()
     {
         EmptyPanel.Visibility = Players.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -706,10 +710,11 @@ public partial class MainWindow : Window
                     MyRankStatus.Text = "暂无榜单记录";
                     return;
                 }
-                double rating = mode == "counterember" ? found.Metrics.Rating : (BedwarsRatingCalculator.Calculate(found.Matches, found.Wins, found.Metrics.Fkdr, found.Metrics.Kd) ?? 0.0);
+                double rating = mode == "counterember" ? found.Metrics.Rating : (BedwarsRatingCalculator.Calculate(found.Matches, found.Wins, found.Metrics.BedsBroken, found.Metrics.Fkdr, found.Metrics.Kd) ?? 0.0);
                 int? rank = _currentLeaderboard.GetRankRating(rating);
                 string ratingLabel = $"{rating:F2}{(found.Matches < 10 ? "*" : "")}";
-                MyRankStatus.Text = rank.HasValue ? $"全服 #{rank} (Rating {ratingLabel})" : $"未入榜 (Rating {ratingLabel})";
+                string ratingName = mode == "counterember" ? "Rating" : "Rating Pro";
+                MyRankStatus.Text = rank.HasValue ? $"全服 #{rank} ({ratingName} {ratingLabel})" : $"未入榜 ({ratingName} {ratingLabel})";
                 return;
             }
         }
@@ -732,7 +737,8 @@ public partial class MainWindow : Window
             if (row.State == "ok" && row.OverallRating.HasValue)
             {
                 int? rank = _currentLeaderboard.GetRankRating(row.OverallRating.Value);
-                MyRankStatus.Text = rank.HasValue ? $"全服 #{rank} (Rating {row.RatingLabel})" : $"未入榜 (Rating {row.RatingLabel})";
+                string ratingName = mode == "counterember" ? "Rating" : "Rating Pro";
+                MyRankStatus.Text = rank.HasValue ? $"全服 #{rank} ({ratingName} {row.RatingLabel})" : $"未入榜 ({ratingName} {row.RatingLabel})";
             }
             else MyRankStatus.Text = "暂无榜单记录";
         }
@@ -871,7 +877,7 @@ public partial class MainWindow : Window
 
         string metricName = metric switch
         {
-            "Rating" => "Rating 榜",
+            "Rating" => ce ? "Rating 榜" : "Rating Pro 榜",
             "WinRate" => "胜率榜",
             "MVPs" => "MVP 榜",
             "Fkdr" => "FKDR 榜",
@@ -886,7 +892,7 @@ public partial class MainWindow : Window
             "Plants" => "下包榜",
             "Defuses" => "拆包榜",
             "MaxRating" => "最高 Rating 榜",
-            _ => "Rating 榜"
+            _ => ce ? "Rating 榜" : "Rating Pro 榜"
         };
         LbSubTitle.Text = $" (Top 50 · {metricName}) — {(ce ? "CounterEmber" : "起床战争")}";
 
@@ -974,9 +980,10 @@ public partial class MainWindow : Window
                     "Plants" => $"下包: {pinned.Plants}",
                     "Defuses" => $"拆包: {pinned.Defuses}",
                     "MaxRating" => $"最高 Rating: {pinned.MaxRatingLabel}",
-                    _ => $"Rating: {pinned.RatingLabel}"
+                    _ => $"{(ce ? "Rating" : "Rating Pro")}: {pinned.RatingLabel}"
                 };
-                LbMySummary.Text = $"我的全服排名: {pinned.LeaderboardDisplayRank.Tag} ({metricName}) · {valStr} · Rating: {pinned.RatingLabel} ({pinned.RatingRank.Tag})";
+                string ratingName = ce ? "Rating" : "Rating Pro";
+                LbMySummary.Text = $"我的全服排名: {pinned.LeaderboardDisplayRank.Tag} ({metricName}) · {valStr} · {ratingName}: {pinned.RatingLabel} ({pinned.RatingRank.Tag})";
             }
             else
             {

@@ -343,24 +343,31 @@ internal static class Program
 
     static void CheckRating()
     {
-        var sampleRating = BedwarsRatingCalculator.Calculate(100, 60, 3, 2)!.Value;
-        Check(Math.Abs(sampleRating - 1.64046894) < 0.000001, "rating should follow the new weighted log formula");
-        var lowerConfidence = BedwarsRatingCalculator.Calculate(1, 1, 3, 2)!.Value;
-        var higherConfidence = BedwarsRatingCalculator.Calculate(100, 60, 3, 2)!.Value;
-        Check(lowerConfidence < higherConfidence, "sample confidence should reduce low-sample performance influence");
-        var baseline = BedwarsRatingCalculator.Calculate(20, 10, 1, 1)!.Value;
-        Check(baseline > 1.0, "the experience bonus should place a neutral 20-game sample slightly above 1.00");
-        Check(BedwarsRatingCalculator.Calculate(0, 0, 1, 1) is null, "zero games should not have a rating");
-        Check(BedwarsRatingCalculator.Calculate(20, 21, 1, 1) is null, "wins cannot exceed matches");
-        Check(BedwarsRatingCalculator.Calculate(20, 10, double.NaN, 1) is null, "invalid ratios should not produce a rating");
-        Check(BedwarsRatingCalculator.Calculate(20, 10, -1, 1) is null, "negative ratios should not produce a rating");
-        Check(BedwarsRatingCalculator.Calculate(1, 0, double.MaxValue, double.MaxValue) == 3.0,
+        var kray = BedwarsRatingCalculator.Calculate(143, 101, 115, 8.75, 4.4786)!.Value;
+        var cnpit = BedwarsRatingCalculator.Calculate(76, 59, 49, 14.4, 5.7619)!.Value;
+        Check(Math.Abs(kray - 2.45976346) < 0.000001, "kray_chi example should match the Rating Pro formula");
+        Check(Math.Abs(cnpit - 2.59036986) < 0.000001, "cnpit example should match the Rating Pro formula");
+
+        var lowerConfidence = BedwarsRatingCalculator.Calculate(1, 1, 1, 3, 2)!.Value;
+        var higherConfidence = BedwarsRatingCalculator.Calculate(100, 60, 60, 3, 2)!.Value;
+        Check(lowerConfidence < higherConfidence, "sample confidence should pull low-sample ratings toward 1.00");
+        var baseline = BedwarsRatingCalculator.Calculate(20, 10, 10, 1, 1)!.Value;
+        Check(baseline == 1.0, "neutral performance metrics should produce the 1.00 baseline without an experience bonus");
+        Check(BedwarsRatingCalculator.Calculate(0, 0, 0, 1, 1) is null, "zero games should not have a rating");
+        Check(BedwarsRatingCalculator.Calculate(20, 21, 10, 1, 1) is null, "wins cannot exceed matches");
+        Check(BedwarsRatingCalculator.Calculate(20, 10, -1, 1, 1) is null, "negative bed counts should not produce a rating");
+        Check(BedwarsRatingCalculator.Calculate(20, 10, 10, double.NaN, 1) is null, "invalid ratios should not produce a rating");
+        Check(BedwarsRatingCalculator.Calculate(20, 10, 10, -1, 1) is null, "negative ratios should not produce a rating");
+        Check(BedwarsRatingCalculator.Calculate(100, 100, 1000, double.MaxValue, double.MaxValue) == 3.0,
             "extreme valid ratios should be capped at the maximum rating");
 
         var a = new PlayerRow { State = "ok", Matches = 20, Wins = 10, WinRate = .5, Fkdr = 1, KD = 1, AvgBeds = .5, BedsBroken = 10 };
-        var b = new PlayerRow { State = "ok", Matches = 20, Wins = 10, WinRate = .5, Fkdr = 1, KD = 1, AvgBeds = 100, BedsBroken = 1000 };
-        Check(a.OverallRating == b.OverallRating, "average and total beds must not affect rating");
+        var sameBedsPerGame = new PlayerRow { State = "ok", Matches = 20, Wins = 10, WinRate = .5, Fkdr = 1, KD = 1, AvgBeds = 100, BedsBroken = 10 };
+        var moreBedsPerGame = new PlayerRow { State = "ok", Matches = 20, Wins = 10, Fkdr = 1, KD = 1, BedsBroken = 20 };
+        Check(a.OverallRating == sameBedsPerGame.OverallRating, "Rating Pro should derive beds per game from counts, not the API avgBeds field");
+        Check(moreBedsPerGame.OverallRating > a.OverallRating, "beds broken per game should contribute 40% of performance");
         var differentWinRate = new PlayerRow { State = "ok", Matches = 20, Wins = 15, WinRate = .25, Fkdr = 1, KD = 1 };
+        differentWinRate.BedsBroken = 10;
         Check(differentWinRate.OverallRating > a.OverallRating, "WLR should use wins and losses rather than the API winRate field");
         var lowSampleCe = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.77 };
         Check(lowSampleCe.OverallRating == 1.77 && lowSampleCe.RatingLabel == "1.77*"
@@ -377,19 +384,24 @@ internal static class Program
         var noGamesText = (string)formatStats.Invoke(null, [noGamesCe])!;
         Check(noGamesText.Contains("Rating: — (最高 —)", StringComparison.Ordinal),
             "copied CE stats must not show a rating when there are no matches");
-        var ordinary = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.11 };
-        var warning = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.12 };
-        var high = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.35 };
-        var rounded = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.346 };
-        var roundedDown = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.344 };
-        Check(!ordinary.IsHighRating && !ordinary.IsWarningRating && ordinary.ThreatLabel == "普通", "1.11 must be ordinary");
-        Check(!warning.IsHighRating && warning.IsWarningRating && warning.ThreatLabel == "危险", "1.12 must be warning");
-        Check(high.IsHighRating && !high.IsWarningRating && high.ThreatLabel == "极危", "1.35 must be high");
-        Check(rounded.RatingLabel == "1.35*" && rounded.IsHighRating && rounded.ThreatLabel == "极危", "highlight and label must follow displayed rounding");
-        Check(roundedDown.RatingLabel == "1.34*" && roundedDown.IsWarningRating, "1.34 must remain warning");
+        var belowDanger = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.3999 };
+        var danger = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.40 };
+        var belowVeryHigh = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 1.9999 };
+        var veryHigh = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = 2.00 };
+        var belowNormal = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = .8499 };
+        var normal = new PlayerRow { State = "ok", GameMode = "counterember", Matches = 1, Rating = .85 };
+        Check(belowDanger.RatingLabel == "1.40*" && belowDanger.ThreatLabel == "普通" && !belowDanger.IsWarningRating,
+            "threat tiers must use raw rating even if display rounding crosses a threshold");
+        Check(danger.IsWarningRating && danger.ThreatLabel == "危险", "1.40 must enter the danger tier");
+        Check(belowVeryHigh.RatingLabel == "2.00*" && belowVeryHigh.IsWarningRating && belowVeryHigh.ThreatLabel == "危险",
+            "a raw rating below 2.00 must stay in the danger tier when rounded up for display");
+        Check(veryHigh.IsHighRating && veryHigh.ThreatLabel == "极其危险", "2.00 must enter the very-high tier");
+        Check(belowNormal.RatingLabel == "0.85*" && belowNormal.IsLowRating && belowNormal.ThreatLabel == "低威胁",
+            "a raw rating below 0.85 must stay low threat when rounded up for display");
+        Check(!normal.IsLowRating && normal.ThreatLabel == "普通", "0.85 must enter the normal tier");
         Check(!new PlayerRow { State = "loading", GameMode = "counterember", Rating = 3 }.IsHighRating, "loading players must not be highlighted");
-        Check(!a.IsHighRating && !a.IsWarningRating && b.OverallRating > 1.0 && b.OverallRating < 1.12,
-            "neutral BW rating must include the experience bonus and remain unhighlighted");
+        Check(!a.IsHighRating && !a.IsWarningRating && !a.IsLowRating && a.OverallRating == 1.0,
+            "neutral BW Rating Pro should be ordinary and remain unhighlighted");
     }
 
     static void CheckLogs()

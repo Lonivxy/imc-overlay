@@ -38,7 +38,14 @@ sealed class PlayerComparer(string key, bool descending) : IComparer
         if (result != 0) return descending ? -result : result;
         return StringComparer.OrdinalIgnoreCase.Compare(a.Username, b.Username);
     }
-    static int ThreatRank(PlayerRow player) => player.ThreatLabel switch { "极危" => 2, "危险" => 1, _ => 0 };
+    static int ThreatRank(PlayerRow player) => player.ThreatLabel switch
+    {
+        "极其危险" => 4,
+        "危险" => 3,
+        "普通" => 2,
+        "低威胁" => 1,
+        _ => 0
+    };
 }
 
 public sealed class PlayerRow : INotifyPropertyChanged
@@ -57,18 +64,22 @@ public sealed class PlayerRow : INotifyPropertyChanged
     public List<ApiRecentMatch> RecentMatches { get; set; } = [];
     public string State { get => _state; set { _state = value; Changed(); Changed(nameof(MatchesLabel)); } }
     public string Error { get => _error; set { _error = value; Changed(); Changed(nameof(MatchesLabel)); } }
-    public double? OverallRating => State != "ok" || Matches <= 0 ? null : GameMode == "counterember" ? Rating : BedwarsRatingCalculator.Calculate(Matches, Wins, Fkdr, KD);
-    double? DisplayedRating => OverallRating is double rating && double.IsFinite(rating) ? Math.Round(rating, 2, MidpointRounding.ToEven) : null;
-    public bool IsHighRating => DisplayedRating >= 1.35;
-    public bool IsWarningRating => DisplayedRating >= 1.12 && DisplayedRating < 1.35;
-    public string ThreatLabel => DisplayedRating is null ? "—" : IsHighRating ? "极危" : IsWarningRating ? "危险" : "普通";
+    public double? OverallRating => State != "ok" || Matches <= 0 ? null : GameMode == "counterember" ? Rating : BedwarsRatingCalculator.Calculate(Matches, Wins, BedsBroken, Fkdr, KD);
+    public bool IsHighRating => OverallRating is double rating && double.IsFinite(rating) && rating >= 2.00;
+    public bool IsWarningRating => OverallRating is double rating && double.IsFinite(rating) && rating >= 1.40 && rating < 2.00;
+    public bool IsLowRating => OverallRating is double rating && double.IsFinite(rating) && rating < 0.85;
+    public string ThreatLabel => OverallRating is not double rating || !double.IsFinite(rating) ? "—"
+        : rating >= 2.00 ? "极其危险"
+        : rating >= 1.40 ? "危险"
+        : rating >= 0.85 ? "普通"
+        : "低威胁";
     public string WinRateLabel => State == "ok" ? WinRate.ToString("P1") : "—"; public string FkdrLabel => State == "ok" ? Fkdr.ToString("F2") : "—";
     public string WinRateColor => State != "ok" ? "#64748B" : WinRate >= .60 ? "#34D399" : WinRate >= .40 ? "#38BDF8" : "#A8B6C9";
     public string FkdrColor => State != "ok" ? "#64748B" : Fkdr >= 4 ? "#FB7185" : Fkdr >= 2.5 ? "#FB923C" : Fkdr >= 1.5 ? "#FBBF24" : Fkdr >= .8 ? "#34D399" : "#A8B6C9";
     public string MVPColor => State == "ok" && MVPs > 0 ? "#FBBF24" : "#64748B";
-    public string RatingLabel => OverallRating is double value ? value.ToString("F2") + (Matches < 10 ? "*" : "") : "—";
+    public string RatingLabel => OverallRating is double value && double.IsFinite(value) ? value.ToString("F2") + (Matches < 10 ? "*" : "") : "—";
     public string RatingInfo => GameMode == "bedwars"
-        ? "项目估算值，非官方 Rating；综合 FKDR、WLR、K/D 和场次平滑。* 表示少于 10 场。"
+        ? "Rating Pro：项目估算值，非 IMC.RE 官方评分；结合 FKDR、场均拆床、WLR、K/D 和样本量修正。* 表示少于 10 场。"
         : "IMC.RE 提供的 CounterEmber Rating。* 表示少于 10 场，样本较少。";
     public string KDLabel => State == "ok" ? KD.ToString("F2") : "—"; public string AdrLabel => State == "ok" ? Adr.ToString("F1") : "—"; public string HsRateLabel => State == "ok" ? HsRate.ToString("P1") : "—";
     public string KastLabel => State == "ok" ? Kast.ToString("P1") : "—";
@@ -206,7 +217,7 @@ public sealed class PlayerRow : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
         foreach (var p in new[]
         {
-            nameof(OverallRating), nameof(IsHighRating), nameof(IsWarningRating), nameof(RatingLabel),
+            nameof(OverallRating), nameof(IsHighRating), nameof(IsWarningRating), nameof(IsLowRating), nameof(RatingLabel),
             nameof(RatingInfo), nameof(ThreatLabel), nameof(WinRateLabel), nameof(FkdrLabel),
             nameof(MatchesLabel), nameof(MVPsLabel), nameof(BedsLabel), nameof(FinalsLabel), nameof(KastLabel),
             nameof(PlantsLabel), nameof(DefusesLabel), nameof(MaxRatingLabel),
