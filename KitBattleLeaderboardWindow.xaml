@@ -1,0 +1,83 @@
+<Window x:Class="IMCBedwarsOverlay.KitBattleLeaderboardWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="KitBattle 全服排行榜" Width="1000" Height="620" MinWidth="850" MinHeight="500"
+        WindowStartupLocation="CenterOwner" Background="#0F141E" Foreground="#E7EDF6"
+        FontFamily="Segoe UI" ResizeMode="CanResizeWithGrip">
+  <Window.Resources>
+    <Style TargetType="Button">
+      <Setter Property="Foreground" Value="#E7EDF6"/><Setter Property="Background" Value="#202B3B"/>
+      <Setter Property="BorderBrush" Value="#3B4A60"/><Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="12,6"/><Setter Property="Cursor" Value="Hand"/>
+    </Style>
+    <Style TargetType="ComboBox">
+      <Setter Property="Background" Value="#101722"/><Setter Property="Foreground" Value="#E7EDF6"/>
+      <Setter Property="BorderBrush" Value="#344155"/><Setter Property="Padding" Value="8,4"/>
+      <Setter Property="FontSize" Value="13"/>
+    </Style>
+    <Style TargetType="ComboBoxItem">
+      <Setter Property="Background" Value="#111B29"/><Setter Property="Foreground" Value="#E7EDF6"/>
+      <Setter Property="Padding" Value="8,6"/>
+      <Style.Triggers>
+        <Trigger Property="IsHighlighted" Value="True"><Setter Property="Background" Value="#253348"/></Trigger>
+        <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#1D3041"/></Trigger>
+      </Style.Triggers>
+    </Style>
+    <Style TargetType="DataGrid">
+      <Setter Property="Background" Value="#111B29"/><Setter Property="Foreground" Value="#E7EDF6"/>
+      <Setter Property="BorderBrush" Value="#2B3546"/><Setter Property="GridLinesVisibility" Value="Horizontal"/>
+      <Setter Property="HorizontalGridLinesBrush" Value="#202938"/><Setter Property="RowBackground" Value="#111B29"/>
+      <Setter Property="AlternatingRowBackground" Value="#0E1825"/><Setter Property="CanUserAddRows" Value="False"/>
+      <Setter Property="IsReadOnly" Value="True"/><Setter Property="RowHeight" Value="40"/><Setter Property="ColumnHeaderHeight" Value="38"/>
+      <Setter Property="ColumnHeaderStyle"><Setter.Value><Style TargetType="DataGridColumnHeader">
+        <Setter Property="Background" Value="#171D29"/><Setter Property="Foreground" Value="#9CAEC4"/>
+        <Setter Property="FontWeight" Value="SemiBold"/><Setter Property="HorizontalContentAlignment" Value="Center"/>
+      </Style></Setter.Value></Setter>
+      <Setter Property="CellStyle"><Setter.Value><Style TargetType="DataGridCell">
+        <Setter Property="BorderThickness" Value="0"/><Setter Property="Padding" Value="8,0"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/><Setter Property="HorizontalContentAlignment" Value="Center"/>
+      </Style></Setter.Value></Setter>
+    </Style>
+  </Window.Resources>
+  <Grid Margin="20">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <DockPanel Margin="0,0,0,14">
+      <Button DockPanel.Dock="Right" Content="关闭" Click="Close_Click"/>
+      <StackPanel>
+        <TextBlock Text="KitBattle 全服排行榜" FontSize="20" FontWeight="Bold"/>
+        <TextBlock x:Name="SubtitleText" Text="IMC.RE 官方分页榜单 · 每页 50 名" Foreground="#8FA1B7" FontSize="12" Margin="0,4,0,0"/>
+      </StackPanel>
+    </DockPanel>
+    <DockPanel Grid.Row="1" Margin="0,0,0,10">
+      <Button DockPanel.Dock="Right" x:Name="RefreshButton" Content="刷新" Click="Refresh_Click"/>
+      <TextBlock Text="排行榜类别" Foreground="#AAB8CA" VerticalAlignment="Center" Margin="0,0,10,0"/>
+      <ComboBox x:Name="MetricCombo" Width="170" Height="34" SelectedIndex="0" Margin="0,0,12,0">
+        <ComboBoxItem Content="击杀" Tag="kills"/>
+        <ComboBoxItem Content="K/D" Tag="kd"/>
+        <ComboBoxItem Content="经验" Tag="exp"/>
+      </ComboBox>
+      <Button x:Name="LoadButton" Content="加载榜单" Click="Load_Click"/>
+      <TextBlock x:Name="LoadStatusText" Foreground="#94A3B8" VerticalAlignment="Center" Margin="14,0,0,0"/>
+    </DockPanel>
+    <DataGrid x:Name="LeaderboardGrid" Grid.Row="2" AutoGenerateColumns="False" AlternationCount="2">
+      <DataGrid.Columns>
+        <DataGridTextColumn Header="名次" Binding="{Binding Position}" Width=".75*"/>
+        <DataGridTextColumn Header="玩家" Binding="{Binding Name}" Width="1.6*"/>
+        <DataGridTextColumn Header="职业段位" Binding="{Binding RankTitle}" Width="1.2*"/>
+        <DataGridTextColumn x:Name="MetricValueColumn" Header="击杀" Binding="{Binding ValueLabel}" Width="1*"/>
+        <DataGridTextColumn Header="击杀数" Binding="{Binding Kills, StringFormat=N0}" Width="1*"/>
+        <DataGridTextColumn Header="死亡数" Binding="{Binding Deaths, StringFormat=N0}" Width="1*"/>
+        <DataGridTextColumn Header="经验" Binding="{Binding Experience, StringFormat=N0}" Width="1.2*"/>
+        <DataGridTextColumn Header="K/D" Binding="{Binding KD, StringFormat=F2}" Width=".9*"/>
+      </DataGrid.Columns>
+    </DataGrid>
+    <DockPanel Grid.Row="3" Margin="0,12,0,0">
+      <TextBlock x:Name="FooterText" Text="榜单按 IMC.RE 的全服排名显示。" Foreground="#74869D" FontSize="11" VerticalAlignment="Center"/>
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+        <Button x:Name="PreviousButton" Content="上一页" Click="Previous_Click" IsEnabled="False" Margin="0,0,8,0"/>
+        <TextBlock x:Name="PageText" Text="第 1 页" Foreground="#C7D2E0" VerticalAlignment="Center" Margin="0,0,8,0"/>
+        <Button x:Name="NextButton" Content="下一页" Click="Next_Click" IsEnabled="False"/>
+      </StackPanel>
+    </DockPanel>
+  </Grid>
+</Window>

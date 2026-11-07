@@ -1,6 +1,6 @@
 # IMC.RE Overlay
 
-一个 Windows 战绩悬浮窗，支持 IMC.RE 的起床战争和 CounterEmber。使用 C# 和 WPF 编写。
+一个 Windows 战绩悬浮窗，支持 IMC.RE 的起床战争和 CounterEmber，并提供 KitBattle 榜单、Party 分析和玩家 VS 对比。使用 C# 和 WPF 编写。
 
 ![悬浮窗界面示例](docs/images/overlay.png)
 
@@ -17,8 +17,9 @@ CounterEmber 查询还可打开 Rating 趋势和近期比赛明细：
 1. 从 Releases 下载 Windows x64 发布包并解压，运行 `IMCBedwarsOverlay-CSharp.exe`。
 2. 在「设置」选择查询模式：初次使用默认为起床战争，之后会记住所选模式。可在此绑定「我的游戏 ID」，以及手动测试 `api.imc.re` 网络连通性。
 3. 进入 IMC.RE 大厅，打开聊天框、输入空格并按 Tab，悬浮窗会尝试从客户端日志读取玩家名单。
-4. 点击「天梯榜单」可直接浏览全服 Top 50 排行榜（默认按 Rating 排序）。若在设置中绑定了个人 ID，将在榜单最上方第一行置顶显示个人全服排名（即使排名在 50 名外也会固定置顶）。
-5. 点击玩家行复制战绩，或使用「查询玩家」查询指定玩家。
+4. 点击「天梯榜单」可浏览 BedWars Rating Pro 或 CounterEmber 官方 Rating 的全服 Top 50，并按分类切换、排序；若绑定个人 ID，会在榜首置顶显示个人名次。排行榜窗口中的「KitBattle 榜」可按击杀、K/D 或经验查看 IMC.RE 官方分页数据，每页 50 名并显示服务器原始全服名次。
+5. 使用「Party」输入 2–4 名玩家，获取团队均值和按模式分配的互补职责；使用「VS」比较两位玩家的对应模式数据。两项功能直接在表格窗口显示并支持复制结果，不生成图片卡片；VS 支持 BedWars、CounterEmber 和 KitBattle。
+6. 点击玩家行复制战绩，或使用「查询玩家」查询指定玩家。
 
 软件启动时会自动在后台自检 `api.imc.re` 网络连通性。若正常连接则保持静默；若被系统防火墙、网络代理或 DNS 异常阻拦，将在主窗口顶部显示醒目的排查提醒。
 
@@ -27,6 +28,10 @@ CounterEmber 查询还可打开 Rating 趋势和近期比赛明细：
 默认按 `\` 显示或隐藏悬浮窗（支持在设置中交互式录制任意按键或组合键，如 `F8`、`Ctrl + Tab`，支持一键恢复默认）；右上角 × 退出程序。顶栏支持一键「清空」同局列表；查询玩家支持最近历史记录快速重查。悬浮窗自动记忆停靠位置与窗口尺寸，并可在设置中开启极其危险玩家进场音效预警。可在设置中调整不透明度，并拖动窗口右下角手柄缩放。
 
 起床战争显示胜率、MVP、FKDR、拆床和终杀；CounterEmber 显示 Rating、K/D、ADR 和爆头率。点击表头可排序。数据来自 IMC.RE 的公开战绩接口，头像通过 mc-heads.net 加载。
+
+当离线玩家与正版玩家同名时，请按服务器名单保留离线玩家名前缀 `-`，例如 `-yys_wys`。前缀不会被去掉：`-yys_wys` 和 `yys_wys` 会分别扫描、查询、缓存和显示。
+
+KitBattle 使用独立的 `/kitbattle/leaderboard` 分页接口，只在其官方榜单页展示击杀、K/D、经验和全服名次；不会将 BedWars Rating Pro 或 CounterEmber Rating 套用到 KitBattle。Party 职责按模式选择：BedWars 根据 Rating Pro、FKDR、场均拆床、K/D 与胜率分配；CounterEmber 根据 ADR、K/D 与胜率分配。VS 使用同模式的有效指标计分，零场或缺失数据不产生优势项。
 
 ### 起床战争 Rating Pro
 

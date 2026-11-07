@@ -14,11 +14,11 @@ internal sealed record LogCandidate(string Path, int ProcessId, bool ConfirmedBy
 internal sealed class MinecraftLogWatcher : IDisposable
 {
     sealed class Cursor { public long Offset; public byte[] Pending = []; public bool SkipFirstLine; }
-    static readonly Regex Username = new(@"^[A-Za-z0-9_]{3,16}$", RegexOptions.Compiled);
+    static readonly Regex Username = new($@"^{PlayerNameRules.Pattern}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     static readonly Regex Colors = new(@"(?i)(?:§|\\u00a7|&)[0-9a-z]", RegexOptions.Compiled);
-    static readonly Regex Plus = new(@"^\[\+\]\s*([A-Za-z0-9_]{3,16})", RegexOptions.Compiled);
-    static readonly Regex Joined = new(@"^([A-Za-z0-9_]{3,16}).*(?:joined the game|has joined)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    static readonly Regex Stats = new(@"(?:^|\s)[-!/]?stats\s+([A-Za-z0-9_]{3,16})\s*$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    static readonly Regex Plus = new($@"^\[\+\]\s*({PlayerNameRules.Pattern})", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    static readonly Regex Joined = new($@"^({PlayerNameRules.Pattern}).*(?:joined the game|has joined)", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    static readonly Regex Stats = new($@"(?:^|\s)[-!/]?stats\s+({PlayerNameRules.Pattern})\s*$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);

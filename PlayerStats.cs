@@ -60,11 +60,13 @@ public sealed class PlayerRow : INotifyPropertyChanged
     public long Matches { get; set; } public long Wins { get; set; } public long MVPs { get; set; } public long BedsBroken { get; set; } public long FinalKills { get; set; } public long Kills { get; set; }
     public double WinRate { get; set; } public double Fkdr { get; set; } public double AvgBeds { get; set; } public double KD { get; set; } public double Rating { get; set; } public double Adr { get; set; } public double HsRate { get; set; }
     public double Kast { get; set; } public long Plants { get; set; } public long Defuses { get; set; } public double MaxRating { get; set; }
+    public long KbExperience { get; set; } public long KbChallengeWins { get; set; } public long KbBestStreak { get; set; }
+    public int? KbKillsRank { get; set; } public string KbRankTitle { get; set; } = "";
     public double[] RatingTrend { get; set; } = [];
     public List<ApiRecentMatch> RecentMatches { get; set; } = [];
     public string State { get => _state; set { _state = value; Changed(); Changed(nameof(MatchesLabel)); } }
     public string Error { get => _error; set { _error = value; Changed(); Changed(nameof(MatchesLabel)); } }
-    public double? OverallRating => State != "ok" || Matches <= 0 ? null : GameMode == "counterember" ? Rating : BedwarsRatingCalculator.Calculate(Matches, Wins, BedsBroken, Fkdr, KD);
+    public double? OverallRating => State != "ok" || Matches <= 0 || GameMode == "kitbattle" ? null : GameMode == "counterember" ? Rating : BedwarsRatingCalculator.Calculate(Matches, Wins, BedsBroken, Fkdr, KD);
     public bool IsHighRating => OverallRating is double rating && double.IsFinite(rating) && rating >= 2.00;
     public bool IsWarningRating => OverallRating is double rating && double.IsFinite(rating) && rating >= 1.40 && rating < 2.00;
     public bool IsLowRating => OverallRating is double rating && double.IsFinite(rating) && rating < 0.85;
@@ -199,6 +201,8 @@ public sealed class PlayerRow : INotifyPropertyChanged
         BedsBroken = x.BedsBroken; FinalKills = x.FinalKills; Kills = x.Kills; WinRate = x.WinRate;
         Fkdr = x.Fkdr; AvgBeds = x.AvgBeds; KD = x.KD; Rating = x.Rating; Adr = x.Adr; HsRate = x.HsRate;
         Kast = x.Kast; Plants = x.Plants; Defuses = x.Defuses; MaxRating = x.MaxRating;
+        KbExperience = x.KbExperience; KbChallengeWins = x.KbChallengeWins; KbBestStreak = x.KbBestStreak;
+        KbKillsRank = x.KbKillsRank; KbRankTitle = x.KbRankTitle;
         RatingTrend = x.RatingTrend.ToArray(); RecentMatches = x.RecentMatches.ToList();
         Error = x.Error; State = x.State;
         WinRateRank = x.WinRateRank; WinsRank = x.WinsRank; MVPRank = x.MVPRank; RatingRank = x.RatingRank; FkdrRank = x.FkdrRank;

@@ -32,6 +32,9 @@ internal static class Program
             return;
         }
         CheckRating();
+        CheckPlayerNameRules();
+        CheckPlayerAnalysis();
+        CheckPlayerToolWindowInitialization();
         CheckLeaderboard();
         CheckCardRenderer();
         CheckLogs();
@@ -217,6 +220,8 @@ internal static class Program
         var api = new StatsApiClient();
         var bw = await api.FetchAsync("NewbieL1314", "bedwars", CancellationToken.None);
         var ce = await api.FetchAsync("player_ypm", "counterember", CancellationToken.None);
+        var kb = await api.FetchAsync("NewbieL1314", "kitbattle", CancellationToken.None);
+        var kbLeaderboard = await api.GetKitBattleLeaderboardAsync("kills", 2);
         var newestCeMatch = ce.RecentMatches.Where(match => match.EndedAt.HasValue).MaxBy(match => match.EndedAt);
         Check(bw.State == "ok" && bw.Matches > 0 && bw.OverallRating.HasValue, "live BW query failed");
         Check(ce.State == "ok" && ce.Matches > 0 && ce.Rating > 0 && ce.Uuid.Length > 0
@@ -225,7 +230,13 @@ internal static class Program
             && newestCeMatch?.Metrics.Rating is double latestRating
             && Math.Abs(ce.RatingTrend[^1] - latestRating) < 0.000001,
             "live CounterEmber summary, trend or recent match data is missing");
-        Console.WriteLine("Live BedWars and full CounterEmber query data passed.");
+        Check(kb.State == "ok" && kb.Kills > 0 && kb.KbExperience > 0 && kb.KbKillsRank > 0
+            && kb.KbRankTitle.Length > 0 && kb.OverallRating is null,
+            "live KitBattle profile fields are missing or incorrectly rated");
+        Check(kbLeaderboard.Data.Players.Count > 0 && kbLeaderboard.Data.Page == 2
+            && kbLeaderboard.Data.Players[0].Position >= 51 && kbLeaderboard.Data.Total > 50,
+            "live KitBattle leaderboard pagination or global positions are missing");
+        Console.WriteLine("Live BedWars, CounterEmber and KitBattle profile/leaderboard checks passed.");
     }
 
     static void CaptureScreenshot(string output)
@@ -404,6 +415,100 @@ internal static class Program
             "neutral BW Rating Pro should be ordinary and remain unhighlighted");
     }
 
+    static void CheckPlayerNameRules()
+    {
+        Check(PlayerNameRules.IsValid("-yys_wys") && PlayerNameRules.IsValid("yys_wys"),
+            "offline duplicate names with a leading hyphen and their premium-name counterpart must both be valid");
+        Check(!PlayerNameRules.IsValid("-") && !PlayerNameRules.IsValid("--yys_wys")
+            && !PlayerNameRules.IsValid("-ab"),
+            "the offline-name prefix must not allow malformed or too-short player names");
+        Check(PlayerNameRules.PreserveRequestedIdentity("-yys_wys", "yys_wys") == "-yys_wys"
+            && PlayerNameRules.PreserveRequestedIdentity("yys_wys", "Yys_Wys") == "Yys_Wys",
+            "API canonicalization must preserve the offline prefix without changing ordinary canonical names");
+    }
+
+    static void CheckPlayerAnalysis()
+    {
+        var red = new PlayerRow
+        {
+            Username = "RedPlayer", State = "ok", GameMode = "bedwars", Matches = 100, Wins = 70,
+            WinRate = .70, BedsBroken = 80, Fkdr = 4.0, KD = 2.0, MVPs = 20
+        };
+        var blue = new PlayerRow
+        {
+            Username = "BluePlayer", State = "ok", GameMode = "bedwars", Matches = 100, Wins = 40,
+            WinRate = .40, BedsBroken = 10, Fkdr = 1.0, KD = .8, MVPs = 5
+        };
+        var party = PlayerAnalysis.AnalyzeParty([red, blue], "bedwars");
+        Check(party.Members.Count == 2 && party.Members.Select(x => x.Role).Distinct().Count() == 2,
+            "BedWars party analysis must assign complementary roles instead of repeating one role");
+        Check(party.Members.Any(x => x.Role.Contains("Slayer", StringComparison.Ordinal))
+            && party.Members.Any(x => x.Role.Contains("Rusher", StringComparison.Ordinal)),
+            "BedWars party analysis must identify the highest FKDR and beds-per-game contributions");
+        var bwComparison = PlayerAnalysis.Compare(red, blue, "bedwars");
+        Check(bwComparison.Metrics.Count == 7 && bwComparison.RedWins > bwComparison.BlueWins
+            && bwComparison.Metrics[0].Metric == "Rating Pro",
+            "BedWars VS must compare Rating Pro and the six requested BedWars stats");
+
+        var ceRed = new PlayerRow
+        {
+            Username = "CeRed", State = "ok", GameMode = "counterember", Matches = 30, Wins = 20,
+            WinRate = .667, Rating = 2.2, KD = 1.8, Adr = 110, HsRate = .45
+        };
+        var ceBlue = new PlayerRow
+        {
+            Username = "CeBlue", State = "ok", GameMode = "counterember", Matches = 30, Wins = 10,
+            WinRate = .333, Rating = 1.2, KD = 1.1, Adr = 70, HsRate = .25
+        };
+        var ceParty = PlayerAnalysis.AnalyzeParty([ceRed, ceBlue], "counterember");
+        var ceComparison = PlayerAnalysis.Compare(ceRed, ceBlue, "counterember");
+        Check(ceParty.Members.Select(x => x.Role).Distinct().Count() == 2
+            && ceParty.Members.Any(x => x.Role.Contains("Entry", StringComparison.Ordinal))
+            && ceComparison.Metrics.Count == 6 && ceComparison.Metrics[0].Metric == "官方 Rating"
+            && ceComparison.RedWins > ceComparison.BlueWins,
+            "CounterEmber party and VS must use the official Rating and CE metrics");
+
+        var kbRed = new PlayerRow
+        {
+            Username = "KbRed", State = "ok", GameMode = "kitbattle", Rating = 3, KD = 2.1,
+            Kills = 1000, KbExperience = 5000, KbChallengeWins = 8, KbBestStreak = 14, KbKillsRank = 42
+        };
+        var kbBlue = new PlayerRow
+        {
+            Username = "KbBlue", State = "ok", GameMode = "kitbattle", Rating = 3, KD = 1.0,
+            Kills = 600, KbExperience = 3000, KbChallengeWins = 3, KbBestStreak = 7, KbKillsRank = 80
+        };
+        var kbComparison = PlayerAnalysis.Compare(kbRed, kbBlue, "kitbattle");
+        Check(kbRed.OverallRating is null && kbComparison.Metrics.Count == 6
+            && kbComparison.Metrics.All(x => !x.Metric.Contains("Rating", StringComparison.Ordinal))
+            && kbComparison.RedWins == 6,
+            "KitBattle comparisons must use its actual metrics and must not assign a BedWars or fake Rating");
+
+        var noStatsA = new PlayerRow { Username = "NoStatsA", State = "ok", GameMode = "bedwars" };
+        var noStatsB = new PlayerRow { Username = "NoStatsB", State = "ok", GameMode = "bedwars" };
+        var noStats = PlayerAnalysis.Compare(noStatsA, noStatsB, "bedwars");
+        Check(noStats.RedWins == 0 && noStats.BlueWins == 0 && noStats.Summary.Contains("没有足够", StringComparison.Ordinal),
+            "players without matches must not receive comparison advantages from zero-filled data");
+        var partyWithoutMatchesRejected = false;
+        try { PlayerAnalysis.AnalyzeParty([noStatsA, noStatsB], "bedwars"); }
+        catch (ArgumentException) { partyWithoutMatchesRejected = true; }
+        Check(partyWithoutMatchesRejected,
+            "party analysis must reject players without a recorded match instead of assigning roles from zero-filled stats");
+    }
+
+    static void CheckPlayerToolWindowInitialization()
+    {
+        var client = new StatsApiClient(new HttpClient(new FakeHandler((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)))));
+        var party = new PlayerToolsWindow(client, PlayerToolKind.Party);
+        var vs = new PlayerToolsWindow(client, PlayerToolKind.Vs);
+        var leaderboard = new KitBattleLeaderboardWindow(client);
+        Check(party.Title.Contains("Party", StringComparison.Ordinal)
+            && vs.Title.Contains("VS", StringComparison.Ordinal)
+            && leaderboard.Title.Contains("KitBattle", StringComparison.Ordinal),
+            "Party, VS and KitBattle leaderboard windows must initialize with their respective modes");
+    }
+
     static void CheckLogs()
     {
         var events = new List<LogEvent>();
@@ -420,6 +525,20 @@ internal static class Program
             Check(events.Count == 1 && events[0].Kind == LogEventKind.Roster && events[0].Names.SequenceEqual(["Alice", "Bob"]), "roster parsing failed");
             watcher.ReadNewLines(path, CancellationToken.None);
             Check(events.Count == 1, "log lines must not be processed twice");
+            watcher.ArmScan();
+            watcher.ProcessLine("[CHAT] -yys_wys, yys_wys");
+            Check(events[^1].Kind == LogEventKind.Roster
+                && events[^1].Names.SequenceEqual(["-yys_wys", "yys_wys"]),
+                "the offline-prefixed player and premium player with the same base name must remain separate roster entries");
+            watcher.ProcessLine("[CHAT] [+] -yys_wys");
+            Check(events[^1].Kind == LogEventKind.PlayerJoined && events[^1].Names.SequenceEqual(["-yys_wys"]),
+                "offline-prefixed player join events must preserve the leading hyphen");
+            watcher.ProcessLine("[CHAT] -yys_wys joined the game");
+            Check(events[^1].Kind == LogEventKind.PlayerJoined && events[^1].Names.SequenceEqual(["-yys_wys"]),
+                "offline-prefixed vanilla join events must preserve the leading hyphen");
+            watcher.ProcessLine("[CHAT] /stats -yys_wys");
+            Check(events[^1].Kind == LogEventKind.StatsCommand && events[^1].Names.SequenceEqual(["-yys_wys"]),
+                "stats chat commands must accept and preserve the offline prefix");
             watcher.ProcessLine("[CHAT] [+] Charlie");
             Check(events[^1].Kind == LogEventKind.PlayerJoined, "join parsing failed");
             var uiThread = Environment.CurrentManagedThreadId;
@@ -516,6 +635,19 @@ internal static class Program
         Check(row.State == "ok" && row.Matches == 42 && calls == 2 && watch.Elapsed >= TimeSpan.FromMilliseconds(900), "Retry-After was not honored");
         await client.FetchAsync("Alice", "bedwars", CancellationToken.None);
         Check(calls == 2, "successful result was not cached");
+
+        var identityPaths = new List<string>();
+        var identityClient = new StatsApiClient(new HttpClient(new FakeHandler((request, _) =>
+        {
+            identityPaths.Add(request.RequestUri!.AbsolutePath);
+            return Task.FromResult(OkJson("""{"summary":{"name":"yys_wys","matches":2,"wins":1,"winRate":0.5,"metrics":{"fkdr":1,"kd":1}}}"""));
+        })));
+        var offlineDuplicate = await identityClient.FetchAsync("-yys_wys", "bedwars", CancellationToken.None);
+        var premiumPlayer = await identityClient.FetchAsync("yys_wys", "bedwars", CancellationToken.None);
+        Check(offlineDuplicate.Username == "-yys_wys" && premiumPlayer.Username == "yys_wys"
+            && identityPaths.SequenceEqual(["/stats/bedwars/players/-yys_wys", "/stats/bedwars/players/yys_wys"]),
+            "prefixed and unprefixed players must keep distinct API paths, cache entries and displayed identities");
+
         calls = 0;
         var bad = new StatsApiClient(new HttpClient(new FakeHandler((_, _) => { calls++; return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest)); })));
         Check((await bad.FetchAsync("Alice", "bedwars", CancellationToken.None)).State == "error" && calls == 1, "permanent HTTP error should not retry");
@@ -584,6 +716,45 @@ internal static class Program
         var cachedLb = await lbClient.GetLeaderboardWithStatusAsync("counterember", force: true);
         Check(freshLb.IsFresh && !cachedLb.IsFresh && cachedLb.Data.Players.Count == 1,
             "leaderboard refresh status must distinguish a new response from stale cache fallback");
+
+        Uri? kitBattleProfileUri = null;
+        var kitBattleProfileJson = """
+        {"name":"KitPlayer","uuid":"uuid-kb","rank":{"rank":"不朽"},"kd":2.5,
+         "totals":{"kills":4478,"deaths":944,"exp":15629,"challengeWins":19},
+         "positions":{"kills":{"position":80,"total":24628}},"tracked":{"bestStreak":35}}
+        """;
+        var kitBattleClient = new StatsApiClient(new HttpClient(new FakeHandler((request, _) =>
+        {
+            kitBattleProfileUri = request.RequestUri;
+            return Task.FromResult(OkJson(kitBattleProfileJson));
+        })));
+        var kitPlayer = await kitBattleClient.FetchAsync("-KitPlayer", "kitbattle", CancellationToken.None);
+        Check(kitBattleProfileUri?.AbsolutePath == "/kitbattle/players/-KitPlayer"
+            && kitPlayer.State == "ok" && kitPlayer.GameMode == "kitbattle" && kitPlayer.Username == "-KitPlayer"
+            && kitPlayer.Kills == 4478 && kitPlayer.KbExperience == 15629 && kitPlayer.KbChallengeWins == 19
+            && kitPlayer.KbBestStreak == 35 && kitPlayer.KbKillsRank == 80 && kitPlayer.KbRankTitle == "不朽"
+            && Math.Abs(kitPlayer.KD - 2.5) < 0.000001 && kitPlayer.OverallRating is null,
+            "KitBattle profile API fields must parse accurately without inventing a Rating");
+
+        var kitBattleLbCalls = 0;
+        var kitBattleLbClient = new StatsApiClient(new HttpClient(new FakeHandler((request, _) =>
+        {
+            kitBattleLbCalls++;
+            Check(request.RequestUri?.AbsolutePath == "/kitbattle/leaderboard"
+                && request.RequestUri.Query.Contains("metric=kills", StringComparison.Ordinal)
+                && request.RequestUri.Query.Contains("page=2", StringComparison.Ordinal)
+                && request.RequestUri.Query.Contains("pageSize=50", StringComparison.Ordinal),
+                "KitBattle leaderboard must use the official metric/page/pageSize API parameters");
+            return Task.FromResult(kitBattleLbCalls == 1
+                ? OkJson("""{"metric":"kills","page":2,"pageSize":50,"total":24628,"players":[{"position":51,"uuid":"uuid-kb","name":"KitPlayer","value":900,"kills":900,"deaths":300,"exp":15629,"rank":"不朽"}]}""")
+                : new HttpResponseMessage(HttpStatusCode.BadRequest));
+        })));
+        var kitBattleLb = await kitBattleLbClient.GetKitBattleLeaderboardAsync("kills", 2);
+        var kitBattleLbCache = await kitBattleLbClient.GetKitBattleLeaderboardAsync("kills", 2);
+        Check(kitBattleLb.IsFresh && !kitBattleLbCache.IsFresh && kitBattleLbCache.Data.Total == 24628
+            && kitBattleLbCache.Data.Players.Single().Position == 51
+            && kitBattleLbCache.Data.Players.Single().RankTitle == "不朽" && kitBattleLbCalls == 1,
+            "KitBattle pages must preserve the API global rank and return cached data when refreshed requests fail");
     }
 
     static void CheckStaleRosterRequest(bool switchMode)

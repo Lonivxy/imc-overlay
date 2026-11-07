@@ -2,7 +2,6 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -47,7 +46,6 @@ public partial class MainWindow : Window
     string _cardName = "";
     double _resizeWidth;
     string _statusBeforeResize = "";
-    static readonly Regex UserRegex = new(@"^[A-Za-z0-9_]{3,16}$", RegexOptions.Compiled);
     string _myPlayerName = "";
     readonly ObservableCollection<PlayerRow> LeaderboardRows = [];
     readonly List<Button> _counterEmberLeaderboardTabs = [];
@@ -300,7 +298,7 @@ public partial class MainWindow : Window
     }
     void AddPlayer(string name)
     {
-        if (!UserRegex.IsMatch(name)) return;
+        if (!PlayerNameRules.IsValid(name)) return;
         if (ByName.ContainsKey(name)) return;
         var mode = _mode;
         var row = new PlayerRow { Username = name, State = "loading", GameMode = mode };
@@ -358,7 +356,7 @@ public partial class MainWindow : Window
     async void SearchBox_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) { e.Handled = true; await Search(); } }
     async Task Search()
     {
-        var name = SearchBox.Text.Trim(); if (!UserRegex.IsMatch(name)) { ModalMessage.Text = "请输入 3 到 16 位英文、数字或下划线组成的玩家名。"; return; }
+        var name = SearchBox.Text.Trim(); if (!PlayerNameRules.IsValid(name)) { ModalMessage.Text = "请输入 3 到 16 位英文、数字或下划线组成的玩家名；离线重名玩家可在前面加 -。"; return; }
         _searchRequests.Cancel(); _searchRequests.Dispose(); _searchRequests = new(); var token = _searchRequests.Token;
         var mode = _mode; var version = ++_searchVersion;
         ModalMessage.Text = "正在查询，遇到服务限流时会自动重试…"; CopyButton.Visibility = Visibility.Collapsed; CardButton.Visibility = Visibility.Collapsed;
@@ -409,7 +407,7 @@ public partial class MainWindow : Window
         animation.Completed += (_, _) => { if (ReferenceEquals(panel.Tag, marker)) { panel.Visibility = Visibility.Collapsed; panel.BeginAnimation(OpacityProperty, null); panel.Opacity = 1; } };
         panel.BeginAnimation(OpacityProperty, animation);
     }
-    void Search_Click(object sender, RoutedEventArgs e) { _searchRequests.Cancel(); _searchVersion++; LastSearchResult = null; ModalTitle.Text = "查询玩家战绩"; SearchBox.Text = ""; ModalMessage.Text = "输入玩家名，最多自动重试 3 次。"; CopyButton.Visibility = Visibility.Collapsed; CardButton.Visibility = Visibility.Collapsed; if (_counterEmberDetailsButton != null) _counterEmberDetailsButton.Visibility = Visibility.Collapsed; UpdateRecentSearchChips(); ShowPanel(ModalShade); SearchBox.Focus(); }
+    void Search_Click(object sender, RoutedEventArgs e) { _searchRequests.Cancel(); _searchVersion++; LastSearchResult = null; ModalTitle.Text = "查询玩家战绩"; SearchBox.Text = ""; ModalMessage.Text = "输入玩家名查询；离线重名玩家保留前缀 -。最多自动重试 3 次。"; CopyButton.Visibility = Visibility.Collapsed; CardButton.Visibility = Visibility.Collapsed; if (_counterEmberDetailsButton != null) _counterEmberDetailsButton.Visibility = Visibility.Collapsed; UpdateRecentSearchChips(); ShowPanel(ModalShade); SearchBox.Focus(); }
     void OnActiveLogDetected(LogSource? source)
     {
         if (Dispatcher.HasShutdownStarted) return;
@@ -754,6 +752,24 @@ public partial class MainWindow : Window
     {
         ShowPanel(LeaderboardShade);
         _ = SwitchLeaderboardCategoryAsync(_lbSortKey, _lbSortDescending);
+    }
+
+    void Party_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new PlayerToolsWindow(_statsApi, PlayerToolKind.Party) { Owner = this };
+        window.Show();
+    }
+
+    void Vs_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new PlayerToolsWindow(_statsApi, PlayerToolKind.Vs) { Owner = this };
+        window.Show();
+    }
+
+    void KitBattleLeaderboard_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new KitBattleLeaderboardWindow(_statsApi) { Owner = this };
+        window.Show();
     }
 
     void LeaderboardClose_Click(object sender, RoutedEventArgs e)
