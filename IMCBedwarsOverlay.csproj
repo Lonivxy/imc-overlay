@@ -7,10 +7,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <AssemblyName>IMCBedwarsOverlay-CSharp</AssemblyName>
-    <Version>2.2.0</Version>
-    <AssemblyVersion>2.2.0.0</AssemblyVersion>
-    <FileVersion>2.2.0.0</FileVersion>
-    <InformationalVersion>2.2.0-radar</InformationalVersion>
+    <Version>2.2.1</Version>
+    <AssemblyVersion>2.2.1.0</AssemblyVersion>
+    <FileVersion>2.2.1.0</FileVersion>
+    <InformationalVersion>2.2.1-radar</InformationalVersion>
     <DefaultItemExcludes>$(DefaultItemExcludes);IMCBedwarsOverlay.exe;IMCBedwarsOverlay.exe~;legacy-go/**;publish/**;publish-single/**;publish-csharp/**;publish-framework/**;release-csharp/**;release-update/**;release-v3/**;release-v4/**;release-v5/**;release-v6/**;release-v7/**;work/**;tests/**;bin/**;obj/**</DefaultItemExcludes>
   </PropertyGroup>
 
